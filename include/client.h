@@ -1,0 +1,108 @@
+/*
+ * Copyright (C) 2022 Jo-Philipp Wich <jo@mein.io>
+ *
+ * Permission to use, copy, modify, and/or distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+#ifndef UWSD_CLIENT_H
+#define UWSD_CLIENT_H
+
+#include <sys/socket.h>
+#include <sys/uio.h>
+#include <netinet/in.h>
+#include <libubox/list.h>
+#include <libubox/uloop.h>
+#include <ucode/vm.h>
+
+#include "listen.h"
+#include "state.h"
+#include "util.h"
+#include "http.h"
+#include "ws.h"
+#include "script.h"
+
+#define DOWNSTREAM_HEAD_TIMEOUT_MS 1000
+#define DOWNSTREAM_XFER_TIMEOUT_MS 10000
+
+#define UPSTREAM_CONNECT_TIMEOUT_MS 10000
+#define UPSTREAM_XFER_TIMEOUT_MS 10000
+
+typedef struct {
+	bool upstream;
+	struct uloop_fd ufd;
+	struct uloop_timeout utm;
+} uwsd_connection_t;
+
+typedef struct uwsd_client_context {
+	struct list_head list;
+	struct uloop_fd *srv;
+	union {
+		struct sockaddr unspec;
+		struct sockaddr_in in;
+		struct sockaddr_in6 in6;
+	} sa;
+	struct {
+		uint8_t data[8192];
+		uint8_t *pos, *end, *sent;
+	} rxbuf;
+	struct {
+		uint8_t data[10 + 8192];
+		uint8_t *pos, *end;
+	} txbuf;
+	uwsd_endpoint_t *endpoint;
+	uwsd_connection_state_t state;
+	uwsd_http_method_t request_method;
+	size_t request_length;
+	char *request_uri;
+	uint16_t http_version, http_status;
+	size_t http_num_headers;
+	uwsd_http_header_t *http_headers;
+	uwsd_connection_t downstream;
+	uwsd_connection_t upstream;
+	struct {
+		uwsd_http_state_t state;
+		ssize_t chunk_len;
+	} http;
+	struct {
+		uwsd_ws_state_t state;
+		union {
+			ws_frame_header_t header;
+			uint16_t u16;
+			uint64_t u64;
+			uint8_t mask[4];
+			char data[125];
+		} buf;
+		struct {
+			uint16_t code;
+			char *msg;
+		} error;
+		size_t buflen, fragments;
+		ws_frame_header_t header;
+		uint64_t len;
+		uint8_t mask[4];
+		struct list_head txq;
+		size_t txqlen;
+	} ws;
+	struct {
+		int fd;
+		size_t msgoff;
+		uc_value_t *conn, *data, *proto;
+	} script;
+} uwsd_client_context_t;
+
+__hidden void client_create(int, struct uloop_fd *, struct sockaddr *, size_t);
+__hidden void client_debug(uwsd_client_context_t *, const char *, ...);
+__hidden void client_free(uwsd_client_context_t *, const char *, ...);
+__hidden void client_free_all(void);
+
+#endif /* UWSD_CLIENT_H */
