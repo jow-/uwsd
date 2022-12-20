@@ -26,6 +26,7 @@
 typedef struct uwsd_client_context uwsd_client_context_t;
 
 #define CONN_STATE_LIST			\
+	STATE(ACCEPT),				\
 	STATE(IDLE),				\
 	STATE(REQUEST),				\
 	STATE(ERROR_ASYNC),			\

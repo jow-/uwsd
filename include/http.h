@@ -88,6 +88,8 @@ __hidden bool uwsd_http_reply_send(uwsd_client_context_t *, bool);
 
 __hidden void uwsd_http_state_idle_timeout(uwsd_client_context_t *, uwsd_connection_state_t, bool);
 
+__hidden void uwsd_http_state_accept(uwsd_client_context_t *, uwsd_connection_state_t, bool);
+
 __hidden void uwsd_http_state_request_header(uwsd_client_context_t *, uwsd_connection_state_t, bool);
 __hidden void uwsd_http_state_request_timeout(uwsd_client_context_t *, uwsd_connection_state_t, bool);
 

@@ -170,7 +170,7 @@ ws_downstream_rx(uwsd_client_context_t *cl)
 	ssize_t rlen;
 
 	if (cl->rxbuf.pos == cl->rxbuf.end) {
-		rlen = recv(cl->downstream.ufd.fd, cl->rxbuf.data, sizeof(cl->rxbuf.data), 0);
+		rlen = client_recv(&cl->downstream, cl->rxbuf.data, sizeof(cl->rxbuf.data));
 
 		if (rlen == -1) {
 			ws_terminate(cl, STATUS_TERMINATED, "Peer receive error: %s", strerror(errno));
@@ -289,7 +289,7 @@ ws_downstream_rx(uwsd_client_context_t *cl)
 }
 
 static bool
-send_iov(int fd, struct iovec *iov, size_t len)
+send_iov(uwsd_connection_t *conn, struct iovec *iov, size_t len)
 {
 	ssize_t wlen, total;
 	size_t i;
@@ -298,7 +298,7 @@ send_iov(int fd, struct iovec *iov, size_t len)
 		total += iov[i].iov_len;
 
 	errno = 0;
-	wlen = writev(fd, iov, len);
+	wlen = client_sendv(conn, iov, len);
 
 	if (wlen == total)
 		return true;
@@ -373,7 +373,7 @@ ws_downstream_tx(uwsd_client_context_t *cl, uwsd_ws_opcode_t opcode, bool add_he
 
 	errno = 0;
 
-	if (!list_empty(&cl->ws.txq) || !send_iov(cl->downstream.ufd.fd, iov, iolen)) {
+	if (!list_empty(&cl->ws.txq) || !send_iov(&cl->downstream, iov, iolen)) {
 		if (!list_empty(&cl->ws.txq))
 			client_debug(cl, "TX in progress (qlen %zu), delaying send...", cl->ws.txqlen);
 		else
@@ -537,7 +537,7 @@ ws_handle_frame_payload(uwsd_client_context_t *cl, void *data, size_t len)
 
 	/* for other frames, forward payload upstream */
 	default:
-		wlen = send(cl->upstream.ufd.fd, data, len, 0);
+		wlen = client_send(&cl->upstream, data, len);
 
 		if (wlen == -1) {
 			if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
@@ -632,7 +632,7 @@ uwsd_ws_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t s
 	// XXX: waker pipe
 	if (cl->endpoint->backend.type == UWSD_BACKEND_SCRIPT) {
 		while (true) {
-			rlen = recv(cl->upstream.ufd.fd, &c, 1, 0);
+			rlen = client_recv(&cl->upstream, &c, 1);
 
 			if (rlen == -1) {
 				if (errno != EAGAIN && errno != EWOULDBLOCK)
@@ -649,8 +649,8 @@ uwsd_ws_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t s
 		return;
 	}
 
-	rlen = recv(cl->upstream.ufd.fd, cl->txbuf.data + WS_TX_BUFFER_HEADROOM,
-		sizeof(cl->txbuf.data) - WS_TX_BUFFER_HEADROOM, 0);
+	rlen = client_recv(&cl->upstream, cl->txbuf.data + WS_TX_BUFFER_HEADROOM,
+		sizeof(cl->txbuf.data) - WS_TX_BUFFER_HEADROOM);
 
 	if (rlen == -1) {
 		if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
@@ -694,7 +694,7 @@ uwsd_ws_state_downstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t
 	while (!list_empty(&cl->ws.txq)) {
 		entry = list_first_entry(&cl->ws.txq, ws_txbuf_t, list);
 
-		if (!send_iov(cl->downstream.ufd.fd, entry->iov, entry->iolen)) {
+		if (!send_iov(&cl->downstream, entry->iov, entry->iolen)) {
 			if (errno)
 				ws_terminate(cl, STATUS_TERMINATED, "Peer send error: %s", strerror(errno));
 
@@ -784,7 +784,7 @@ uwsd_ws_connection_close(uwsd_client_context_t *cl, uint16_t code, const char *m
 	iov[1].iov_base = &buf;
 	iov[1].iov_len = hdr.len;
 
-	send_iov(cl->downstream.ufd.fd, iov, 2);
+	send_iov(&cl->downstream, iov, 2);
 
 	ws_terminate(cl, code, "%s", msg);
 

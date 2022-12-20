@@ -61,6 +61,8 @@ accept_cb(struct uloop_fd *ufd, unsigned int events)
 {
 	socklen_t alen = sizeof(struct sockaddr_in6);
 	struct sockaddr_in6 sa = { 0 };
+	uwsd_endpoint_t *ep;
+	bool ssl = false;
 	int fd;
 
 	fd = accept(ufd->fd, &sa, &alen);
@@ -71,7 +73,18 @@ accept_cb(struct uloop_fd *ufd, unsigned int events)
 		return;
 	}
 
-	client_create(fd, ufd, (struct sockaddr *)&sa, alen);
+	list_for_each_entry(ep, &uwsd_endpoints, list) {
+		if (&ep->socket->ufd != ufd)
+			continue;
+
+		if (ep->type != UWSD_LISTEN_HTTPS && ep->type != UWSD_LISTEN_WSS)
+			continue;
+
+		ssl = true;
+		break;
+	}
+
+	client_create(fd, ufd, (struct sockaddr *)&sa, alen, ssl);
 }
 
 __hidden uwsd_endpoint_t *
@@ -298,4 +311,16 @@ uwsd_endpoint_lookup(struct uloop_fd *ufd, bool ws, const char *prefix)
 	}
 
 	return matching_ep;
+}
+
+__hidden bool
+uwsd_has_ssl_endpoints(void)
+{
+	uwsd_endpoint_t *ep;
+
+	list_for_each_entry(ep, &uwsd_endpoints, list)
+		if (ep->type == UWSD_LISTEN_WSS || ep->type == UWSD_LISTEN_HTTPS)
+			return true;
+
+	return false;
 }

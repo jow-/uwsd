@@ -19,10 +19,12 @@
 
 #include "listen.h"
 #include "client.h"
+#include "ssl.h"
 
 
 static struct option uwsd_options[] = {
 	{ "endpoint", required_argument, NULL, 0 },
+	{ "certdir",  required_argument, NULL, 1 },
 	{ 0 }
 };
 
@@ -43,7 +45,7 @@ usage(void)
 int
 main(int argc, char **argv)
 {
-	bool has_endpoints = false;
+	bool has_endpoints = false, has_certificates = false, has_certdirs = false;
 	int opt, option_index = 0;
 
 	uloop_init();
@@ -55,6 +57,12 @@ main(int argc, char **argv)
 			has_endpoints = true;
 			uwsd_endpoint_create(optarg);
 		}
+		else if (opt == 1) {
+			has_certdirs = true;
+
+			if (uwsd_ssl_load_certificates(optarg))
+				has_certificates = true;
+		}
 		else if (opt == -1) {
 			break;
 		}
@@ -65,6 +73,17 @@ main(int argc, char **argv)
 
 	if (!has_endpoints)
 		return usage();
+
+	if (uwsd_has_ssl_endpoints()) {
+		if (!has_certdirs)
+			has_certificates = uwsd_ssl_load_certificates("/etc/uwsd/certificates");
+
+		if (!has_certificates) {
+			fprintf(stderr, "SSL endpoints defined but no usable certificates loaded, aborting.\n");
+
+			return 1;
+		}
+	}
 
 	uloop_run();
 

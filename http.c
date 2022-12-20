@@ -22,7 +22,6 @@
 #include <errno.h>
 #include <assert.h>
 
-#include <sys/sendfile.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 
@@ -289,7 +288,7 @@ http_chunked_recv(uwsd_client_context_t *cl, uwsd_connection_t *conn)
 	ssize_t rlen;
 
 	if (cl->rxbuf.pos == cl->rxbuf.end) {
-		rlen = read(conn->ufd.fd, cl->rxbuf.data, sizeof(cl->rxbuf.data));
+		rlen = client_recv(conn, cl->rxbuf.data, sizeof(cl->rxbuf.data));
 
 		if (rlen == -1) {
 			client_free(cl, "%s recv error: %s",
@@ -435,7 +434,7 @@ http_contentlen_recv(uwsd_client_context_t *cl, uwsd_connection_t *conn)
 	ssize_t rlen;
 
 	if (cl->rxbuf.pos == cl->rxbuf.end) {
-		rlen = read(conn->ufd.fd, cl->rxbuf.data,
+		rlen = client_recv(conn, cl->rxbuf.data,
 			size_t_min(sizeof(cl->rxbuf.data), cl->request_length));
 
 		if (rlen == -1) {
@@ -477,7 +476,7 @@ http_untileof_recv(uwsd_client_context_t *cl, uwsd_connection_t *conn)
 	ssize_t rlen;
 
 	if (cl->rxbuf.pos == cl->rxbuf.end) {
-		rlen = read(conn->ufd.fd, cl->rxbuf.data, sizeof(cl->rxbuf.data));
+		rlen = client_recv(conn, cl->rxbuf.data, sizeof(cl->rxbuf.data));
 
 		if (rlen == -1) {
 			client_free(cl, "%s recv error: %s",
@@ -514,7 +513,7 @@ http_request_recv(uwsd_client_context_t *cl)
 		if (cl->rxbuf.end == cl->rxbuf.data + sizeof(cl->rxbuf.data))
 			http_failure(cl, 431, "Request Header Fields Too Large", "Request header too long");
 
-		rlen = read(cl->downstream.ufd.fd, cl->rxbuf.end,
+		rlen = client_recv(&cl->downstream, cl->rxbuf.end,
 			cl->rxbuf.data + sizeof(cl->rxbuf.data) - cl->rxbuf.end);
 
 		if (rlen == -1) {
@@ -674,7 +673,7 @@ http_response_recv(uwsd_client_context_t *cl)
 	size_t len;
 
 	if (cl->rxbuf.pos == cl->rxbuf.end) {
-		rlen = read(cl->upstream.ufd.fd, cl->rxbuf.data, sizeof(cl->rxbuf.data));
+		rlen = client_recv(&cl->upstream, cl->rxbuf.data, sizeof(cl->rxbuf.data));
 
 		if (rlen == -1)
 			http_failure(cl, 502, "Bad Gateway",
@@ -945,7 +944,7 @@ __hidden bool
 uwsd_http_reply_send(uwsd_client_context_t *cl, bool error)
 {
 	ssize_t len = cl->rxbuf.end - cl->rxbuf.pos;
-	ssize_t wlen = send(cl->downstream.ufd.fd, cl->rxbuf.pos, len, 0);
+	ssize_t wlen = client_send(&cl->downstream, cl->rxbuf.pos, len);
 
 	if (wlen != len) {
 		client_debug(cl, "downstream congested, delay sending %zd bytes [%s]",
@@ -1218,6 +1217,20 @@ http_is_websocket_handshake(uwsd_client_context_t *cl)
 	return true;
 }
 
+/* accepting an HTTP connection */
+__hidden void
+uwsd_http_state_accept(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
+{
+	if (!client_accept(cl)) {
+		if (errno == EAGAIN)
+			return; /* retry */
+
+		return client_free(cl, "SSL handshake error: %s", strerror(errno));
+	}
+
+	uwsd_state_transition(cl, STATE_CONN_REQUEST);
+}
+
 /* reading an HTTP request header */
 __hidden void
 uwsd_http_state_request_header(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
@@ -1312,7 +1325,7 @@ uwsd_http_state_response_send(uwsd_client_context_t *cl, uwsd_connection_state_t
 {
 	/* Sending buffered data to stream */
 	ssize_t len = cl->rxbuf.end - cl->rxbuf.pos;
-	ssize_t wlen = send(cl->downstream.ufd.fd, cl->rxbuf.pos, len, 0);
+	ssize_t wlen = client_send(&cl->downstream, cl->rxbuf.pos, len);
 
 	client_debug(cl, "send(%zd) delayed [%zd sent]", len, wlen);
 
@@ -1334,7 +1347,7 @@ uwsd_http_state_response_send(uwsd_client_context_t *cl, uwsd_connection_state_t
 
 		if (state == STATE_CONN_REPLY_FILECOPY && cl->request_method != HTTP_HEAD) {
 			do {
-				len = read(cl->upstream.ufd.fd, cl->rxbuf.data, sizeof(cl->rxbuf.data));
+				len = client_recv(&cl->upstream, cl->rxbuf.data, sizeof(cl->rxbuf.data));
 			} while (len == -1 && errno == EINTR);
 
 			if (len == -1)
@@ -1366,7 +1379,7 @@ uwsd_http_state_response_sendfile(uwsd_client_context_t *cl, uwsd_connection_sta
 	ssize_t wlen;
 
 	if (cl->rxbuf.pos < cl->rxbuf.end) {
-		wlen = send(cl->downstream.ufd.fd, cl->rxbuf.pos, cl->rxbuf.end - cl->rxbuf.pos, 0);
+		wlen = client_send(&cl->downstream, cl->rxbuf.pos, cl->rxbuf.end - cl->rxbuf.pos);
 
 		if (wlen == -1) {
 			/* Ignore retryable errors */
@@ -1381,7 +1394,7 @@ uwsd_http_state_response_sendfile(uwsd_client_context_t *cl, uwsd_connection_sta
 		return;
 	}
 
-	wlen = sendfile(cl->downstream.ufd.fd, cl->upstream.ufd.fd, NULL, sizeof(cl->rxbuf.data));
+	wlen = client_sendfile(&cl->downstream, cl->upstream.ufd.fd, NULL, sizeof(cl->rxbuf.data));
 
 	if (wlen == -1) {
 		if (errno == EINVAL || errno == ENOSYS) {
@@ -1445,7 +1458,7 @@ uwsd_http_state_upstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t
 	ssize_t wlen;
 
 	if (cl->endpoint->backend.type != UWSD_BACKEND_SCRIPT) {
-		wlen = send(cl->upstream.ufd.fd, cl->rxbuf.sent, cl->rxbuf.pos - cl->rxbuf.sent, 0);
+		wlen = client_send(&cl->upstream, cl->rxbuf.sent, cl->rxbuf.pos - cl->rxbuf.sent);
 
 		if (wlen == -1) {
 			if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
@@ -1510,7 +1523,7 @@ uwsd_http_state_downstream_send(uwsd_client_context_t *cl, uwsd_connection_state
 {
 	ssize_t wlen;
 
-	wlen = send(cl->downstream.ufd.fd, cl->rxbuf.sent, cl->rxbuf.end - cl->rxbuf.sent, 0);
+	wlen = client_send(&cl->downstream, cl->rxbuf.sent, cl->rxbuf.end - cl->rxbuf.sent);
 
 	if (wlen == -1) {
 		/* Ignore retryable errors */

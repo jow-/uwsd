@@ -75,4 +75,6 @@ typedef struct {
 __hidden uwsd_endpoint_t *uwsd_endpoint_create(const char *);
 __hidden uwsd_endpoint_t *uwsd_endpoint_lookup(struct uloop_fd *, bool, const char *);
 
+__hidden bool uwsd_has_ssl_endpoints(void);
+
 #endif /* UWSD_LISTEN_H */

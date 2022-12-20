@@ -31,6 +31,14 @@
 #define UPSTREAM_XFER_TIMEOUT_MS 10000
 
 static const uwsd_state_entry_t states[] = {
+	[STATE_CONN_ACCEPT] = {
+		.channels   = CHANNEL_DOWNSTREAM,
+		.events     = EVENT_READABLE,
+		.io_cb      = uwsd_http_state_accept,
+		.timeout    = DOWNSTREAM_HEAD_TIMEOUT_MS,
+		.timeout_cb = uwsd_http_state_request_timeout
+	},
+
 	[STATE_CONN_IDLE] = {
 		.channels   = CHANNEL_DOWNSTREAM,
 		.events     = EVENT_READABLE,

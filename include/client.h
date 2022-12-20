@@ -39,6 +39,7 @@
 
 typedef struct {
 	bool upstream;
+	void *ssl;
 	struct uloop_fd ufd;
 	struct uloop_timeout utm;
 } uwsd_connection_t;
@@ -100,9 +101,15 @@ typedef struct uwsd_client_context {
 	} script;
 } uwsd_client_context_t;
 
-__hidden void client_create(int, struct uloop_fd *, struct sockaddr *, size_t);
+__hidden void client_create(int, struct uloop_fd *, struct sockaddr *, size_t, bool);
 __hidden void client_debug(uwsd_client_context_t *, const char *, ...);
 __hidden void client_free(uwsd_client_context_t *, const char *, ...);
 __hidden void client_free_all(void);
+
+__hidden bool client_accept(uwsd_client_context_t *);
+__hidden ssize_t client_recv(uwsd_connection_t *, void *, size_t);
+__hidden ssize_t client_send(uwsd_connection_t *, const void *, size_t);
+__hidden ssize_t client_sendv(uwsd_connection_t *, struct iovec *, size_t);
+__hidden ssize_t client_sendfile(uwsd_connection_t *, int, off_t *, size_t);
 
 #endif /* UWSD_CLIENT_H */
