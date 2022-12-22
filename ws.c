@@ -397,7 +397,12 @@ ws_downstream_tx(uwsd_client_context_t *cl, uwsd_ws_opcode_t opcode, bool add_he
 
 	/* we completely sent a close message, tear down connection */
 	if (opcode == OPCODE_CLOSE) {
-		ws_terminate(cl, STATUS_CONNECTION_CLOSING, "Connection closing");
+		if (cl->ws.error.code)
+			ws_terminate(cl,
+				cl->ws.error.code,
+				"%s", cl->ws.error.msg ? cl->ws.error.msg : "");
+		else
+			ws_terminate(cl, STATUS_CONNECTION_CLOSING, "Connection closing");
 
 		return false;
 	}
