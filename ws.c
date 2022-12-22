@@ -548,17 +548,23 @@ ws_handle_frame_payload(uwsd_client_context_t *cl, void *data, size_t len)
 
 	/* for other frames, forward payload upstream */
 	default:
-		wlen = client_send(&cl->upstream, data, len);
-
-		if (wlen == -1) {
-			if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+		if (cl->endpoint->backend.type == UWSD_BACKEND_SCRIPT) {
+			if (!uwsd_script_send(cl, cl->rxbuf.sent, cl->rxbuf.pos - cl->rxbuf.sent))
 				return false;
+		}
+		else {
+			wlen = client_send(&cl->upstream, data, len);
 
-			uwsd_ws_connection_close(cl, STATUS_INTERNAL_ERROR,
-				"Error while sending request to upstream server: %s",
-				strerror(errno));
+			if (wlen == -1) {
+				if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+					return false;
 
-			return false;
+				uwsd_ws_connection_close(cl, STATUS_INTERNAL_ERROR,
+					"Error while sending request to upstream server: %s",
+					strerror(errno));
+
+				return false;
+			}
 		}
 
 		/* reset timer */
@@ -744,17 +750,12 @@ uwsd_ws_state_downstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 	if (cl->ws.state < STATE_WS_PAYLOAD)
 		return; /* need more data */
 
-	if (cl->endpoint->backend.type == UWSD_BACKEND_SCRIPT) {
-		if (uwsd_script_send(cl, cl->rxbuf.sent, cl->rxbuf.pos - cl->rxbuf.sent)) {
-			if (cl->ws.state == STATE_WS_COMPLETE)
-				ws_state_transition(cl, STATE_WS_HEADER);
+	/* For script backends, invoke upstream send callback directly as we'll
+	 * have no epoll-capable fd to notify us */
+	if (cl->endpoint->backend.type == UWSD_BACKEND_SCRIPT)
+		return uwsd_ws_state_upstream_send(cl, STATE_CONN_WS_UPSTREAM_SEND, true);
 
-			cl->rxbuf.sent = cl->rxbuf.pos;
-		}
-	}
-	else {
-		uwsd_state_transition(cl, STATE_CONN_WS_UPSTREAM_SEND);
-	}
+	uwsd_state_transition(cl, STATE_CONN_WS_UPSTREAM_SEND);
 }
 
 __hidden void
