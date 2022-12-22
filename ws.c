@@ -591,8 +591,6 @@ ws_handle_frame_completion(uwsd_client_context_t *cl, void *data, size_t len)
 			cl->ws.error.msg = strndup(data + sizeof(uint16_t), len - sizeof(uint16_t));
 		}
 
-		uwsd_script_close(cl);
-
 		return uwsd_ws_reply_send(cl, OPCODE_CLOSE, data, len);
 
 	/* nothing to do for other frames */
