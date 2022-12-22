@@ -187,6 +187,9 @@ ws_downstream_rx(uwsd_client_context_t *cl)
 		cl->rxbuf.pos = cl->rxbuf.data;
 		cl->rxbuf.end = cl->rxbuf.pos + rlen;
 		cl->rxbuf.sent = cl->rxbuf.pos;
+
+		/* reset timer */
+		uwsd_state_transition(cl, cl->state);
 	}
 
 	for (off = cl->rxbuf.pos; off < cl->rxbuf.end; off++, cl->rxbuf.pos++) {
@@ -549,6 +552,9 @@ ws_handle_frame_payload(uwsd_client_context_t *cl, void *data, size_t len)
 
 			return false;
 		}
+
+		/* reset timer */
+		uwsd_state_transition(cl, cl->state);
 
 		return true;
 	}
