@@ -95,13 +95,16 @@ static void __attribute__ ((format (printf, 3, 0)))
 ws_terminate(uwsd_client_context_t *cl, uint16_t rcode, const char *msg, ...)
 {
 	va_list ap;
+	char *s;
 
 	cl->ws.error.code = rcode;
 
 	va_start(ap, msg);
-	free(cl->ws.error.msg);
-	xvasprintf(&cl->ws.error.msg, msg, ap);
+	xvasprintf(&s, msg, ap);
 	va_end(ap);
+
+	free(cl->ws.error.msg);
+	cl->ws.error.msg = s;
 
 	client_free(cl, cl->ws.error.msg);
 }
