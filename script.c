@@ -421,7 +421,7 @@ uwsd_script_init(uwsd_backend_t *be)
 __hidden bool
 uwsd_script_connect(uwsd_client_context_t *cl, int wakefd)
 {
-	uwsd_backend_t *be = &cl->endpoint->backend;
+	uwsd_backend_t *be = uwsd_endpoint_backend_get(cl->endpoint);
 	uc_value_t *ctx, *protocols = NULL;
 	uc_resource_type_t *conn_type;
 	uc_exception_type_t ex;
@@ -494,7 +494,7 @@ uwsd_script_connect(uwsd_client_context_t *cl, int wakefd)
 __hidden bool
 uwsd_script_send(uwsd_client_context_t *cl, const void *data, size_t len)
 {
-	uwsd_backend_t *be = &cl->endpoint->backend;
+	uwsd_backend_t *be = uwsd_endpoint_backend_get(cl->endpoint);
 	uc_exception_type_t ex;
 	uc_value_t *ctx;
 	bool final;
@@ -541,7 +541,7 @@ uwsd_script_close(uwsd_client_context_t *cl)
 
 	assert(cl);
 
-	be = &cl->endpoint->backend;
+	be = uwsd_endpoint_backend_get(cl->endpoint);
 
 	if (cl->endpoint && be->script.onClose) {
 		if (be->script.vm.exception.type != EXCEPTION_NONE)
@@ -574,7 +574,7 @@ uwsd_script_close(uwsd_client_context_t *cl)
 __hidden bool
 uwsd_script_request(uwsd_client_context_t *cl, int downstream)
 {
-	uwsd_backend_t *be = &cl->endpoint->backend;
+	uwsd_backend_t *be = uwsd_endpoint_backend_get(cl->endpoint);
 	uc_resource_type_t *conn_type;
 	uc_exception_type_t ex;
 	uc_value_t *ctx;
@@ -630,7 +630,7 @@ uwsd_script_request(uwsd_client_context_t *cl, int downstream)
 __hidden bool
 uwsd_script_bodydata(uwsd_client_context_t *cl, const void *data, size_t len)
 {
-	uwsd_backend_t *be = &cl->endpoint->backend;
+	uwsd_backend_t *be = uwsd_endpoint_backend_get(cl->endpoint);
 	uc_exception_type_t ex;
 	uc_value_t *ctx;
 

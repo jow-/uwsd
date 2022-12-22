@@ -53,19 +53,6 @@ ssl_error(void)
 }
 
 static void
-sys_perror(const char *fmt, ...)
-{
-	int err = errno;
-	va_list ap;
-
-	va_start(ap, fmt);
-	vfprintf(stderr, fmt, ap);
-	va_end(ap);
-
-	fprintf(stderr, ": %s\n", strerror(err));
-}
-
-static void
 ssl_perror(const char *fmt, ...)
 {
 	va_list ap;

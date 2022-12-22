@@ -14,23 +14,20 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef UWSD_SSL_H
-#define UWSD_SSL_H
+#ifndef UWSD_CONFIG_H
+#define UWSD_CONFIG_H
 
-#include <sys/uio.h>
+#include <libubox/list.h>
 
-#include "client.h"
+#include "util.h"
 
-typedef struct uwsd_client_context uwsd_client_context_t;
+typedef struct {
+	char *certificate_directory;
+	struct list_head endpoints;
+} uwsd_config_t;
 
-__hidden bool uwsd_ssl_load_certificates(const char *);
+extern uwsd_config_t *config;
 
-__hidden bool uwsd_ssl_init(uwsd_client_context_t *);
-__hidden void uwsd_ssl_free(uwsd_client_context_t *);
-__hidden bool uwsd_ssl_accept(uwsd_client_context_t *);
+__hidden bool uwsd_config_parse(const char *);
 
-__hidden ssize_t uwsd_ssl_recv(uwsd_connection_t *, void *, size_t);
-__hidden ssize_t uwsd_ssl_send(uwsd_connection_t *, const void *, size_t);
-__hidden ssize_t uwsd_ssl_sendv(uwsd_connection_t *, struct iovec *, size_t);
-
-#endif /* UWSD_SSL_H */
+#endif /* UWSD_CONFIG_H */

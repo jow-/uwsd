@@ -43,6 +43,7 @@ typedef enum {
 } uwsd_backend_type_t;
 
 typedef struct uwsd_backend {
+	struct list_head list;
 	uwsd_backend_type_t type;
 	char *addr, *port, *wsproto;
 	bool binary;
@@ -51,6 +52,7 @@ typedef struct uwsd_backend {
 		uc_value_t *onConnect, *onData, *onClose;
 		uc_value_t *onRequest, *onBody;
 	} script;
+	int idle_timeout, connect_timeout;
 } uwsd_backend_t;
 
 typedef struct {
@@ -69,12 +71,30 @@ typedef struct {
 		struct sockaddr_in6 in6;
 	} addr;
 	uwsd_socket_t *socket;
-	uwsd_backend_t backend;
+	struct list_head upstream;
 } uwsd_endpoint_t;
 
-__hidden uwsd_endpoint_t *uwsd_endpoint_create(const char *);
+typedef struct {
+	struct list_head list;
+	uwsd_listen_type_t type;
+	uwsd_socket_t *socket;
+	uwsd_backend_t *backend;
+	char *id, *prefix;
+} uwsd_frontend_t;
+
 __hidden uwsd_endpoint_t *uwsd_endpoint_lookup(struct uloop_fd *, bool, const char *);
 
 __hidden bool uwsd_has_ssl_endpoints(void);
+
+__hidden bool uwsd_endpoint_url_parse(uwsd_endpoint_t *, const char *);
+__hidden bool uwsd_backend_url_parse(uwsd_backend_t *, const char *);
+
+static inline uwsd_backend_t *
+uwsd_endpoint_backend_get(uwsd_endpoint_t *ep) {
+	if (!ep || list_empty(&ep->upstream))
+		return NULL;
+
+	return list_first_entry(&ep->upstream, uwsd_backend_t, list);
+}
 
 #endif /* UWSD_LISTEN_H */

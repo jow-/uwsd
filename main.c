@@ -20,11 +20,11 @@
 #include "listen.h"
 #include "client.h"
 #include "ssl.h"
+#include "config.h"
 
 
 static struct option uwsd_options[] = {
-	{ "endpoint", required_argument, NULL, 0 },
-	{ "certdir",  required_argument, NULL, 1 },
+	{ "config", required_argument, NULL, 0 },
 	{ 0 }
 };
 
@@ -32,11 +32,7 @@ static int
 usage(void)
 {
 	fatal(
-		"Usage: uwsd --endpoint={spec} [--endpoint={spec}...]\n\n"
-		"Endpoint format:\n"
-		"{ws,wss,http,https}://{host}[:{port}]/{path} \\\n"
-		"	{tcp,udp,unix,script,file}:{host-or-path}[:{port}] \\\n"
-		"	[{binary,text} [{protocol}]]"
+		"Usage: uwsd --config={file}\n\n"
 	);
 
 	return 1;
@@ -45,7 +41,6 @@ usage(void)
 int
 main(int argc, char **argv)
 {
-	bool has_endpoints = false, has_certificates = false, has_certdirs = false;
 	int opt, option_index = 0;
 
 	uloop_init();
@@ -54,14 +49,11 @@ main(int argc, char **argv)
 		opt = getopt_long(argc, argv, "", uwsd_options, &option_index);
 
 		if (opt == 0) {
-			has_endpoints = true;
-			uwsd_endpoint_create(optarg);
-		}
-		else if (opt == 1) {
-			has_certdirs = true;
+			if (config)
+				fatal("Option --config must be given only once");
 
-			if (uwsd_ssl_load_certificates(optarg))
-				has_certificates = true;
+			if (!uwsd_config_parse(optarg))
+				exit(1);
 		}
 		else if (opt == -1) {
 			break;
@@ -71,19 +63,11 @@ main(int argc, char **argv)
 		}
 	}
 
-	if (!has_endpoints)
-		return usage();
+	if (!config && !uwsd_config_parse("/etc/uwsd/uwsd.conf"))
+		exit(1);
 
-	if (uwsd_has_ssl_endpoints()) {
-		if (!has_certdirs)
-			has_certificates = uwsd_ssl_load_certificates("/etc/uwsd/certificates");
-
-		if (!has_certificates) {
-			fprintf(stderr, "SSL endpoints defined but no usable certificates loaded, aborting.\n");
-
-			return 1;
-		}
-	}
+	if (list_empty(&config->endpoints))
+		fatal("No endpoints defined in configuration, aborting");
 
 	uloop_run();
 

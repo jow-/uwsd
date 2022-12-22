@@ -417,6 +417,7 @@ uwsd_ws_connection_accept(uwsd_client_context_t *cl)
 {
 	const char *magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 	int socktype = -1, waker[2];
+	uwsd_backend_t *be;
 	size_t len;
 	char *key;
 
@@ -453,29 +454,29 @@ uwsd_ws_connection_accept(uwsd_client_context_t *cl)
 	/* calculate binary digest and store it after input string in buffer */
 	sha1digest(cl->rxbuf.data, NULL, cl->rxbuf.data + 20, len);
 
-	if (cl->endpoint->backend.type == UWSD_BACKEND_TCP) {
+	be = uwsd_endpoint_backend_get(cl->endpoint);
+
+	if (be->type == UWSD_BACKEND_TCP) {
 		socktype = USOCK_TCP|USOCK_NONBLOCK;
 
 		client_debug(cl, "connecting to upstream TCP server %s:%s",
-			cl->endpoint->backend.addr, cl->endpoint->backend.port);
+			be->addr, be->port);
 	}
-	else if (cl->endpoint->backend.type == UWSD_BACKEND_UDP) {
+	else if (be->type == UWSD_BACKEND_UDP) {
 		socktype = USOCK_UDP|USOCK_NONBLOCK;
 
 		client_debug(cl, "connecting to upstream UDP server %s:%s",
-			cl->endpoint->backend.addr, cl->endpoint->backend.port);
+			be->addr, be->port);
 	}
-	else if (cl->endpoint->backend.type == UWSD_BACKEND_UNIX) {
+	else if (be->type == UWSD_BACKEND_UNIX) {
 		client_debug(cl, "connecting to UNIX domain socket %s",
-			cl->endpoint->backend.addr);
+			be->addr);
 
 		socktype = USOCK_UNIX|USOCK_NONBLOCK;
 	}
 
 	if (socktype != -1) {
-		cl->upstream.ufd.fd = usock(socktype,
-			cl->endpoint->backend.addr,
-			cl->endpoint->backend.port);
+		cl->upstream.ufd.fd = usock(socktype, be->addr, be->port);
 
 		if (cl->upstream.ufd.fd == -1) {
 			uwsd_http_error_send(cl, 502, "Bad Gateway",
@@ -548,7 +549,7 @@ ws_handle_frame_payload(uwsd_client_context_t *cl, void *data, size_t len)
 
 	/* for other frames, forward payload upstream */
 	default:
-		if (cl->endpoint->backend.type == UWSD_BACKEND_SCRIPT) {
+		if (uwsd_endpoint_backend_get(cl->endpoint)->type == UWSD_BACKEND_SCRIPT) {
 			if (!uwsd_script_send(cl, cl->rxbuf.sent, cl->rxbuf.pos - cl->rxbuf.sent))
 				return false;
 		}
@@ -648,7 +649,7 @@ uwsd_ws_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t s
 	char c;
 
 	// XXX: waker pipe
-	if (cl->endpoint->backend.type == UWSD_BACKEND_SCRIPT) {
+	if (uwsd_endpoint_backend_get(cl->endpoint)->type == UWSD_BACKEND_SCRIPT) {
 		while (true) {
 			rlen = client_recv(&cl->upstream, &c, 1);
 
@@ -692,7 +693,7 @@ uwsd_ws_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t s
 	cl->txbuf.end = cl->txbuf.pos + rlen;
 
 	ws_downstream_tx(cl,
-		cl->endpoint->backend.binary ? OPCODE_BINARY : OPCODE_TEXT,
+		uwsd_endpoint_backend_get(cl->endpoint)->binary ? OPCODE_BINARY : OPCODE_TEXT,
 		true,
 		cl->txbuf.pos, rlen);
 }
@@ -750,7 +751,7 @@ uwsd_ws_state_downstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 
 	/* For script backends, invoke upstream send callback directly as we'll
 	 * have no epoll-capable fd to notify us */
-	if (cl->endpoint->backend.type == UWSD_BACKEND_SCRIPT)
+	if (uwsd_endpoint_backend_get(cl->endpoint)->type == UWSD_BACKEND_SCRIPT)
 		return uwsd_ws_state_upstream_send(cl, STATE_CONN_WS_UPSTREAM_SEND, true);
 
 	uwsd_state_transition(cl, STATE_CONN_WS_UPSTREAM_SEND);

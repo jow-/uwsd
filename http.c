@@ -227,10 +227,12 @@ http_has_message_body(uint16_t code)
 static bool
 http_request_data_callback(uwsd_client_context_t *cl, uwsd_connection_t *conn, void *data, size_t len)
 {
+	uwsd_backend_t *be = uwsd_endpoint_backend_get(cl->endpoint);
+
 	if (conn == &cl->upstream)
 		return true;
 
-	if (!cl->endpoint || cl->endpoint->backend.type != UWSD_BACKEND_SCRIPT)
+	if (!be || be->type != UWSD_BACKEND_SCRIPT)
 		return true;
 
 	return uwsd_script_bodydata(cl, data, len);
@@ -1015,7 +1017,8 @@ uwsd_http_error_send(uwsd_client_context_t *cl, uint16_t code, const char *reaso
 static char *
 determine_path(uwsd_client_context_t *cl)
 {
-	size_t dst_len = strlen(cl->endpoint->backend.addr);
+	uwsd_backend_t *be = uwsd_endpoint_backend_get(cl->endpoint);
+	size_t dst_len = strlen(be->addr);
 	size_t pfx_len = strlen(cl->endpoint->prefix);
 	char *url = NULL, *path = NULL, *base = NULL;
 	size_t req_len = 0;
@@ -1030,7 +1033,7 @@ determine_path(uwsd_client_context_t *cl)
 	req_len = strcspn(url, "?");
 	url[req_len] = 0;
 
-	base = pathexpand(cl->endpoint->backend.addr, NULL);
+	base = pathexpand(be->addr, NULL);
 
 	if (!base) {
 		errno = ENOMEM;
@@ -1039,7 +1042,7 @@ determine_path(uwsd_client_context_t *cl)
 	}
 
 	/* destination is a directory */
-	if (dst_len && cl->endpoint->backend.addr[dst_len - 1] == '/') {
+	if (dst_len && be->addr[dst_len - 1] == '/') {
 		/* backend path prefix is a directory */
 		if (pfx_len && cl->endpoint->prefix[pfx_len - 1] == '/') {
 			if (req_len <= pfx_len)
@@ -1081,12 +1084,14 @@ determine_path(uwsd_client_context_t *cl)
 static bool
 http_proxy_connect(uwsd_client_context_t *cl)
 {
+	uwsd_backend_t *be = uwsd_endpoint_backend_get(cl->endpoint);
+
 	if (cl->upstream.ufd.fd == -1) {
 		client_debug(cl, "connecting to upstream HTTP server %s:%s",
-			cl->endpoint->backend.addr, cl->endpoint->backend.port);
+			be->addr, be->port);
 
 		cl->upstream.ufd.fd = usock(USOCK_TCP|USOCK_NONBLOCK,
-			cl->endpoint->backend.addr, cl->endpoint->backend.port);
+			be->addr, be->port);
 
 		if (cl->upstream.ufd.fd == -1) {
 			uwsd_http_error_send(cl, 502, "Bad Gateway",
@@ -1236,6 +1241,7 @@ __hidden void
 uwsd_http_state_request_header(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
 	uwsd_endpoint_t *ep;
+	uwsd_backend_t *be;
 	bool ws;
 
 	if (!http_request_recv(cl))
@@ -1251,6 +1257,8 @@ uwsd_http_state_request_header(uwsd_client_context_t *cl, uwsd_connection_state_
 	ep = uwsd_endpoint_lookup(cl->srv, ws, cl->request_uri);
 
 	if (ep) {
+		be = uwsd_endpoint_backend_get(ep);
+
 		/* If endpoint changed since last request, make sure to close
 		 * associated descriptor */
 		if (ep != cl->endpoint) {
@@ -1267,15 +1275,15 @@ uwsd_http_state_request_header(uwsd_client_context_t *cl, uwsd_connection_state_
 				return;
 		}
 		else {
-			if (ep->backend.type == UWSD_BACKEND_TCP) {
+			if (be->type == UWSD_BACKEND_TCP) {
 				if (!http_proxy_connect(cl))
 					return;
 			}
-			else if (ep->backend.type == UWSD_BACKEND_FILE) {
+			else if (be->type == UWSD_BACKEND_FILE) {
 				if (!http_file_serve(cl))
 					return;
 			}
-			else if (ep->backend.type == UWSD_BACKEND_SCRIPT) {
+			else if (be->type == UWSD_BACKEND_SCRIPT) {
 				if (!http_script_invoke(cl))
 					return;
 			}
@@ -1446,7 +1454,7 @@ uwsd_http_state_upstream_connected(uwsd_client_context_t *cl, uwsd_connection_st
 
 	/* we use a oneway pipe towards the script and won't ever get write readyness,
 	 * so directly transition to upstream send callback */
-	if (cl->endpoint->backend.type == UWSD_BACKEND_SCRIPT)
+	if (uwsd_endpoint_backend_get(cl->endpoint)->type == UWSD_BACKEND_SCRIPT)
 		return uwsd_http_state_upstream_send(cl, STATE_CONN_UPSTREAM_SEND, true);
 
 	uwsd_state_transition(cl, STATE_CONN_UPSTREAM_SEND);
@@ -1457,7 +1465,7 @@ uwsd_http_state_upstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t
 {
 	ssize_t wlen;
 
-	if (cl->endpoint->backend.type != UWSD_BACKEND_SCRIPT) {
+	if (uwsd_endpoint_backend_get(cl->endpoint)->type != UWSD_BACKEND_SCRIPT) {
 		wlen = client_send(&cl->upstream, cl->rxbuf.sent, cl->rxbuf.pos - cl->rxbuf.sent);
 
 		if (wlen == -1) {

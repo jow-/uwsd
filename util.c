@@ -127,19 +127,22 @@ pathexpand(const char *path, const char *base)
 
 	if (*path != '/') {
 		if (base && *base == '/') {
-			asprintf(&p, "%s/%s", base, path);
+			if (asprintf(&p, "%s/%s", base, path) == -1)
+				return NULL;
 		}
 		else if (base) {
 			if (!getcwd(buf, sizeof(buf)))
 				return NULL;
 
-			asprintf(&p, "%s/%s/%s", buf, base, path);
+			if (asprintf(&p, "%s/%s/%s", buf, base, path) == -1)
+				return NULL;
 		}
 		else {
 			if (!getcwd(buf, sizeof(buf)))
 				return NULL;
 
-			asprintf(&p, "%s/%s", buf, path);
+			if (asprintf(&p, "%s/%s", buf, path) == -1)
+				return NULL;
 		}
 	}
 	else {
@@ -212,4 +215,17 @@ pathmatch(const char *prefix, const char *path)
 		return 0;
 
 	return prefixlen;
+}
+
+__hidden __attribute__((format(printf, 1, 0))) void
+sys_perror(const char *fmt, ...)
+{
+	int err = errno;
+	va_list ap;
+
+	va_start(ap, fmt);
+	vfprintf(stderr, fmt, ap);
+	va_end(ap);
+
+	fprintf(stderr, ": %s\n", strerror(err));
 }
