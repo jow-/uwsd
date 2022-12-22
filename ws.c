@@ -611,11 +611,11 @@ uwsd_ws_state_upstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t s
 			return uwsd_state_transition(cl, STATE_CONN_WS_DOWNSTREAM_RECV);
 
 		case STATE_WS_COMPLETE:
-			/* XXX: more buffered data, extract next frame */
-			ws_state_transition(cl, STATE_WS_HEADER);
-
 			if (!ws_handle_frame_completion(cl, cl->ws.buf.data, cl->ws.buflen))
 				return; /* error or delayed send */
+
+			/* XXX: more buffered data, extract next frame */
+			ws_state_transition(cl, STATE_WS_HEADER);
 
 			/* rx buffer exhausted, await more data */
 			if (cl->rxbuf.pos == cl->rxbuf.end)
