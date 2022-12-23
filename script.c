@@ -20,6 +20,7 @@
 #include <errno.h>
 #include <assert.h>
 #include <ctype.h>
+#include <arpa/inet.h>
 
 #include <libubox/uloop.h>
 #include <ucode/compiler.h>
@@ -70,6 +71,43 @@ uc_script_data(uc_vm_t *vm, size_t nargs)
 	}
 
 	return ucv_get((*cl)->script.data);
+}
+
+static uc_value_t *
+uc_script_peer(uc_vm_t *vm, size_t nargs)
+{
+	uwsd_client_context_t **cl = uc_fn_this("uwsd.connection");
+	char peer[40] = {};
+	uc_value_t *retval;
+	uint16_t port;
+
+	if (!cl)
+		cl = uc_fn_this("uwsd.request");
+
+	if (!cl || !*cl)
+		return NULL;
+
+	switch((*cl)->sa.unspec.sa_family) {
+	case AF_INET:
+		inet_ntop(AF_INET, &(*cl)->sa.in.sin_addr, peer, 16);
+		port = htons((*cl)->sa.in.sin_port);
+		break;
+
+	case AF_INET6:
+		inet_ntop(AF_INET6, &(*cl)->sa.in6.sin6_addr, peer, sizeof(peer));
+		if (!strncmp(peer, "::ffff:", 7))
+			strcpy(peer, &peer[7]);
+		port = htons((*cl)->sa.in6.sin6_port);
+		break;
+
+	default:
+		return NULL;
+	}
+	retval = ucv_object_new(vm);
+	ucv_object_add(retval, "ip", ucv_string_new(peer));
+	ucv_object_add(retval, "port", ucv_uint64_new(port));
+
+	return retval;
 }
 
 static uc_value_t *
@@ -145,6 +183,7 @@ uc_script_close(uc_vm_t *vm, size_t nargs)
 static const uc_function_list_t conn_fns[] = {
 	{ "accept",	uc_script_accept },
 	{ "data",	uc_script_data },
+	{ "peer",	uc_script_peer },
 	{ "send",	uc_script_send },
 	{ "close",	uc_script_close }
 };
