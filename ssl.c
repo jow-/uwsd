@@ -125,25 +125,6 @@ err:
 	return NULL;
 }
 
-static bool
-ssl_match_hostname(const char *certname, const char *hostname)
-{
-	const char *p;
-
-	/* wildcard */
-	if (strncmp(certname, "*.", 2) == 0) {
-		p = strchr(hostname, '.');
-
-		if (!p || !p[1] || p == hostname)
-			return false;
-
-		hostname = p + 1;
-		certname += 2;
-	}
-
-	return (strcasecmp(certname, hostname) == 0);
-}
-
 static const char *
 ssl_get_subject_cn(X509_NAME *subj)
 {
@@ -172,91 +153,31 @@ ssl_match_context(SSL_CTX *ssl_ctx, const struct sockaddr *sa, const char *hostn
 {
 	struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)sa;
 	struct sockaddr_in *s4 = (struct sockaddr_in *)sa;
-
-	STACK_OF(GENERAL_NAME) *san;
-	const GENERAL_NAME *name;
-
-	X509_NAME_ENTRY *e;
-	X509_NAME *subj;
 	X509 *cert;
-
-	ASN1_STRING *s;
-	const char *p;
-	bool match;
-	int pos;
 
 	cert = SSL_CTX_get0_certificate(ssl_ctx);
 
-	// XXX: https://www.openssl.org/docs/manmaster/man3/X509_check_host.html
+	if (sa) {
+		if (sa->sa_family == AF_INET6) {
+			if (IN6_IS_ADDR_V4MAPPED(&s6->sin6_addr))
+				return (X509_check_ip(cert, &s6->sin6_addr.s6_addr[12], 4, 0) == 1);
+
+			return (X509_check_ip(cert, s6->sin6_addr.s6_addr, 16, 0) == 1);
+		}
+
+		return (X509_check_ip(cert, (unsigned char *)&s4->sin_addr, 4, 0) == 1);
+	}
 
 	if (hostname) {
-		/* check common name match */
-		subj = X509_get_subject_name(cert);
-		pos = X509_NAME_get_index_by_NID(subj, NID_commonName, -1);
-
-		if (pos >= 0) {
-			e = X509_NAME_get_entry(subj, pos);
-			s = X509_NAME_ENTRY_get_data(e);
-			p = (char *)ASN1_STRING_get0_data(s);
-
-			if ((size_t)ASN1_STRING_length(s) == strlen(p) &&
-			    ssl_match_hostname(p, hostname))
-				return true;
-		}
+		return (
+			X509_check_host(cert, hostname, strlen(hostname),
+				X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS|X509_CHECK_FLAG_SINGLE_LABEL_SUBDOMAINS,
+				NULL
+			) == 1
+		);
 	}
 
-	/* check subject alt name matches */
-	san = X509_get_ext_d2i(cert, NID_subject_alt_name, NULL, NULL);
-
-	for (pos = 0, match = false; san && !match && pos < sk_GENERAL_NAME_num(san); pos++) {
-		name = sk_GENERAL_NAME_value(san, pos);
-
-		switch (name->type) {
-		case GEN_DNS:
-			if (!hostname)
-				continue;
-
-			p = (char *)ASN1_STRING_get0_data(name->d.dNSName);
-
-			if ((size_t)ASN1_STRING_length(name->d.dNSName) != strlen(p))
-				continue;
-
-			match = ssl_match_hostname(p, hostname);
-			break;
-
-		case GEN_IPADD:
-			if (!sa)
-				continue;
-
-			char buf[1024];
-			fprintf(stderr, "match-sockaddr %s\n",
-				inet_ntop(sa->sa_family, &s6->sin6_addr, buf, sizeof(buf)));
-
-			p = (char *)name->d.ip->data;
-
-			if (name->d.ip->length == 4) {
-				if (sa->sa_family == AF_INET6 && IN6_IS_ADDR_V4MAPPED(&s6->sin6_addr)) {
-					fprintf(stderr, "match-sockaddr#2 %s/",
-						inet_ntop(AF_INET, &s6->sin6_addr.s6_addr[12], buf, sizeof(buf)));
-					fprintf(stderr, "%s\n",
-						inet_ntop(AF_INET, p, buf, sizeof(buf)));
-
-					match = !memcmp(p, &s6->sin6_addr.s6_addr[12], 4);
-				}
-				else if (sa->sa_family == AF_INET)
-					match = !memcmp(p, &s4->sin_addr, 4);
-			}
-			else if (name->d.ip->length == 16) {
-				match = (sa->sa_family == AF_INET6 && !memcmp(p, &s6->sin6_addr, 16));
-			}
-
-			break;
-		}
-	}
-
-	sk_GENERAL_NAME_pop_free(san, GENERAL_NAME_free);
-
-	return match;
+	return false;
 }
 
 static SSL_CTX *
