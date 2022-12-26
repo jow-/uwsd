@@ -25,6 +25,7 @@
 #include "config.h"
 #include "listen.h"
 #include "ssl.h"
+#include "auth.h"
 
 
 uwsd_config_t *config;
@@ -137,6 +138,12 @@ property_ptr(const config_prop_t *prop, void *base)
 #define list_ptr(prop, base) (struct list_head *)property_ptr(prop, base)
 
 
+static bool parse_basic_auth(void *obj, const char *label);
+static bool validate_basic_auth(void *obj);
+
+static bool parse_mtls_auth(void *obj, const char *label);
+
+
 static const config_block_t upstream_spec = {
 	.size = sizeof(uwsd_backend_t),
 	.init = parse_upstream,
@@ -151,6 +158,35 @@ static const config_block_t upstream_spec = {
 	}
 };
 
+static const config_block_t basic_auth_spec = {
+	.size = sizeof(uwsd_auth_t),
+	.init = parse_basic_auth,
+	.validate = validate_basic_auth,
+	.properties = {
+		{ "realm", STRING,
+			offsetof(uwsd_auth_t, data.basic.realm), NULL, NULL },
+		{ "username", STRING,
+			offsetof(uwsd_auth_t, data.basic.username), NULL, NULL },
+		{ "password", STRING,
+			offsetof(uwsd_auth_t, data.basic.password), NULL, NULL },
+		{ "shadow-lookup", BOOLEAN,
+			offsetof(uwsd_auth_t, data.basic.shadow), NULL, NULL },
+		{ 0 }
+	}
+};
+
+static const config_block_t mtls_auth_spec = {
+	.size = sizeof(uwsd_auth_t),
+	.init = parse_mtls_auth,
+	.properties = {
+		{ "require-cn", STRING,
+			offsetof(uwsd_auth_t, data.mtls.require_cn), NULL, NULL },
+		{ "require-ca", STRING,
+			offsetof(uwsd_auth_t, data.mtls.require_ca), NULL, NULL },
+		{ 0 }
+	}
+};
+
 static const config_block_t endpoint_spec = {
 	.size = sizeof(uwsd_endpoint_t),
 	.init = parse_endpoint,
@@ -158,6 +194,10 @@ static const config_block_t endpoint_spec = {
 	.properties = {
 		{ "upstream", BLOCK,
 			offsetof(uwsd_endpoint_t, upstream), &upstream_spec, NULL },
+		{ "auth-basic", BLOCK,
+			offsetof(uwsd_endpoint_t, auth), &basic_auth_spec, NULL },
+		{ "auth-mtls", BLOCK,
+			offsetof(uwsd_endpoint_t, auth), &mtls_auth_spec, NULL },
 		{ 0 }
 	}
 };
@@ -460,6 +500,45 @@ print_error_pos(const char *input, const char *off)
 	fprintf(stderr, "In line %zu, byte %zu.\n", line, byte);
 	fprintf(stderr, "Near here:\n\n  `%.*s`\n\n", (int)strcspn(input, "\n"), input);
 }
+
+
+static bool
+parse_basic_auth(void *obj, const char *label)
+{
+	uwsd_auth_t *auth = obj;
+
+	auth->type = UWSD_AUTH_BASIC;
+
+	return true;
+}
+
+static bool
+validate_basic_auth(void *obj)
+{
+	uwsd_auth_t *auth = obj;
+
+	if (!auth->data.basic.password && !auth->data.basic.shadow)
+		return parse_error("Require either 'password' or 'shadow-lookup' property");
+
+	if (auth->data.basic.password && auth->data.basic.shadow)
+		return parse_error("The properties 'password' and 'shadow-lookup' are exclusive");
+
+	if (!auth->data.basic.realm)
+		auth->data.basic.realm = xstrdup("Protected area");
+
+	return true;
+}
+
+static bool
+parse_mtls_auth(void *obj, const char *label)
+{
+	uwsd_auth_t *auth = obj;
+
+	auth->type = UWSD_AUTH_MTLS;
+
+	return true;
+}
+
 
 __hidden bool
 uwsd_config_parse(const char *file)

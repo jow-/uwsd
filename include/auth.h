@@ -14,23 +14,41 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef UWSD_CONFIG_H
-#define UWSD_CONFIG_H
+#ifndef UWSD_AUTH_H
+#define UWSD_AUTH_H
 
 #include <stdbool.h>
 
-#include <libubox/list.h>
-
 #include "util.h"
+#include "client.h"
+
+
+typedef enum {
+	UWSD_AUTH_BASIC,
+	UWSD_AUTH_MTLS,
+} uwsd_auth_type_t;
 
 typedef struct {
-	char *certificate_directory;
-	struct list_head endpoints;
-} uwsd_config_t;
+	struct list_head list;
+	uwsd_auth_type_t type;
+	union {
+		struct {
+			const char *realm;
+			const char *username;
+			const char *password;
+			bool shadow;
+		} basic;
+		struct {
+			const char *require_cn;
+			const char *require_ca;
+		} mtls;
+	} data;
+} uwsd_auth_t;
 
 
-extern uwsd_config_t *config;
+typedef struct uwsd_client_context uwsd_client_context_t;
 
-__hidden bool uwsd_config_parse(const char *);
+__hidden bool auth_check_mtls(uwsd_client_context_t *);
+__hidden bool auth_check_basic(uwsd_client_context_t *);
 
-#endif /* UWSD_CONFIG_H */
+#endif /* UWSD_AUTH_H */

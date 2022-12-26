@@ -44,6 +44,7 @@ __hidden size_t memspn_common(const void *, size_t, const char *, size_t, bool);
 #define memcspn(s, n, set) memspn_common(s, n, set, sizeof(set) - 1, true)
 
 __hidden int strspncmp(const char *, const char *, const char *);
+__hidden int strspncasecmp(const char *, const char *, const char *);
 
 __hidden char *urldecode(const char *);
 __hidden char *pathexpand(const char *, const char *);

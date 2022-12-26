@@ -26,11 +26,14 @@
 #include <fcntl.h>
 
 #include <libubox/usock.h>
+#include <libubox/utils.h>
 
 #include "client.h"
 #include "http.h"
 #include "file.h"
 #include "state.h"
+#include "config.h"
+#include "auth.h"
 
 #define HTTP_METHOD(name) { #name, sizeof(#name) - 1, HTTP_##name }
 
@@ -1269,6 +1272,12 @@ uwsd_http_state_request_header(uwsd_client_context_t *cl, uwsd_connection_state_
 
 			cl->endpoint = ep;
 		}
+
+		if (!auth_check_mtls(cl))
+			return;
+
+		if (!auth_check_basic(cl))
+			return;
 
 		if (ws) {
 			if (!uwsd_ws_connection_accept(cl))

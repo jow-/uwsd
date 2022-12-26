@@ -30,8 +30,12 @@
 #include <openssl/pem.h>
 #include <openssl/x509v3.h>
 
+#include <libubox/list.h>
+
 #include "client.h"
 #include "ssl.h"
+#include "config.h"
+#include "auth.h"
 
 
 static bool ssl_initialized = false;
@@ -140,6 +144,29 @@ ssl_match_hostname(const char *certname, const char *hostname)
 	return (strcasecmp(certname, hostname) == 0);
 }
 
+static const char *
+ssl_get_subject_cn(X509_NAME *subj)
+{
+	X509_NAME_ENTRY *e;
+	ASN1_STRING *s;
+	const char *p;
+	int pos;
+
+	pos = X509_NAME_get_index_by_NID(subj, NID_commonName, -1);
+
+	if (pos < 0)
+		return NULL;
+
+	e = X509_NAME_get_entry(subj, pos);
+	s = X509_NAME_ENTRY_get_data(e);
+	p = (char *)ASN1_STRING_get0_data(s);
+
+	if ((size_t)ASN1_STRING_length(s) != strlen(p))
+		return NULL;
+
+	return p;
+}
+
 static bool
 ssl_match_context(SSL_CTX *ssl_ctx, const struct sockaddr *sa, const char *hostname)
 {
@@ -159,6 +186,8 @@ ssl_match_context(SSL_CTX *ssl_ctx, const struct sockaddr *sa, const char *hostn
 	int pos;
 
 	cert = SSL_CTX_get0_certificate(ssl_ctx);
+
+	// XXX: https://www.openssl.org/docs/manmaster/man3/X509_check_host.html
 
 	if (hostname) {
 		/* check common name match */
@@ -199,11 +228,21 @@ ssl_match_context(SSL_CTX *ssl_ctx, const struct sockaddr *sa, const char *hostn
 			if (!sa)
 				continue;
 
+			char buf[1024];
+			fprintf(stderr, "match-sockaddr %s\n",
+				inet_ntop(sa->sa_family, &s6->sin6_addr, buf, sizeof(buf)));
+
 			p = (char *)name->d.ip->data;
 
 			if (name->d.ip->length == 4) {
-				if (sa->sa_family == AF_INET6 && IN6_IS_ADDR_V4MAPPED(&s6->sin6_addr))
+				if (sa->sa_family == AF_INET6 && IN6_IS_ADDR_V4MAPPED(&s6->sin6_addr)) {
+					fprintf(stderr, "match-sockaddr#2 %s/",
+						inet_ntop(AF_INET, &s6->sin6_addr.s6_addr[12], buf, sizeof(buf)));
+					fprintf(stderr, "%s\n",
+						inet_ntop(AF_INET, p, buf, sizeof(buf)));
+
 					match = !memcmp(p, &s6->sin6_addr.s6_addr[12], 4);
+				}
 				else if (sa->sa_family == AF_INET)
 					match = !memcmp(p, &s4->sin_addr, 4);
 			}
@@ -279,6 +318,8 @@ uwsd_ssl_load_certificates(const char *directory)
 	}
 
 	while ((e = readdir(dp)) != NULL) {
+		ssl_ctx = NULL;
+
 		snprintf(path, sizeof(path), "%s/%s", directory, e->d_name);
 
 		if (stat(path, &s)) {
@@ -359,9 +400,25 @@ skip:
 	return (num_certs > 0);
 }
 
+static uwsd_auth_t *
+ssl_require_mtls(uwsd_client_context_t *cl)
+{
+	uwsd_endpoint_t *ep;
+	uwsd_auth_t *auth;
+
+	list_for_each_entry(ep, &config->endpoints, list)
+		if (&ep->socket->ufd == cl->srv)
+			list_for_each_entry(auth, &ep->auth, list)
+				if (auth->type == UWSD_AUTH_MTLS)
+					return auth;
+
+	return NULL;
+}
+
 __hidden bool
 uwsd_ssl_init(uwsd_client_context_t *cl)
 {
+	uwsd_auth_t *auth;
 	SSL_CTX *tls_ctx;
 	SSL *ssl = NULL;
 
@@ -372,6 +429,17 @@ uwsd_ssl_init(uwsd_client_context_t *cl)
 		goto err;
 
 	SSL_set_fd(ssl, cl->downstream.ufd.fd);
+
+	auth = ssl_require_mtls(cl);
+
+	client_debug(cl, "Require auth");
+
+	if (auth)
+		SSL_set_verify(ssl,
+			SSL_VERIFY_PEER|SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
+			NULL);
+	else
+		SSL_set_verify(ssl, SSL_VERIFY_NONE, NULL);
 
 	cl->downstream.ssl = ssl;
 
@@ -538,4 +606,50 @@ uwsd_ssl_sendv(uwsd_connection_t *conn, struct iovec *iov, size_t len)
 	}
 
 	return total ? total : -1;
+}
+
+__hidden const char *
+uwsd_ssl_peer_subject_name(uwsd_connection_t *conn)
+{
+	SSL *ssl = conn->ssl;
+	X509_NAME *peer_subj;
+	X509 *peer_cert;
+
+	if (!ssl)
+		return NULL;
+
+	peer_cert = SSL_get0_peer_certificate(ssl);
+
+	if (!peer_cert)
+		return NULL;
+
+	peer_subj = X509_get_subject_name(peer_cert);
+
+	if (!peer_subj)
+		return NULL;
+
+	return ssl_get_subject_cn(peer_subj);
+}
+
+__hidden const char *
+uwsd_ssl_peer_issuer_name(uwsd_connection_t *conn)
+{
+	SSL *ssl = conn->ssl;
+	X509_NAME *peer_issuer;
+	X509 *peer_cert;
+
+	if (!ssl)
+		return NULL;
+
+	peer_cert = SSL_get0_peer_certificate(ssl);
+
+	if (!peer_cert)
+		return NULL;
+
+	peer_issuer = X509_get_issuer_name(peer_cert);
+
+	if (!peer_issuer)
+		return NULL;
+
+	return ssl_get_subject_cn(peer_issuer);
 }

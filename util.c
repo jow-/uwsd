@@ -86,6 +86,23 @@ strspncmp(const char *start, const char *end, const char *cmp)
 	return 0;
 }
 
+__hidden int
+strspncasecmp(const char *start, const char *end, const char *cmp)
+{
+	while (start < end) {
+		if ((*start|32) != (*cmp|32))
+			return *(unsigned char *)start - *(unsigned char *)cmp;
+
+		start++;
+		cmp++;
+	}
+
+	if (*cmp)
+		return 0 - *(unsigned char *)cmp;
+
+	return 0;
+}
+
 __hidden char *
 urldecode(const char *str)
 {

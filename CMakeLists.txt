@@ -17,7 +17,7 @@ ELSE()
   ADD_DEFINITIONS(-DNDEBUG)
 ENDIF()
 
-SET(UWSD_SOURCES main.c teeny-sha1.c util.c listen.c http.c client.c ws.c file.c state.c script.c ssl.c config.c)
+SET(UWSD_SOURCES main.c teeny-sha1.c util.c listen.c http.c client.c ws.c file.c state.c script.c ssl.c config.c auth.c)
 ADD_EXECUTABLE(uwsd ${UWSD_SOURCES})
 
 FIND_LIBRARY(ubox NAMES ubox)
@@ -25,4 +25,10 @@ FIND_LIBRARY(ucode NAMES ucode)
 FIND_LIBRARY(jsonc NAMES json-c)
 FIND_LIBRARY(crypto NAMES crypto)
 FIND_LIBRARY(ssl NAMES ssl)
-TARGET_LINK_LIBRARIES(uwsd ${ubox} ${ucode} ${jsonc} ${ssl} ${crypto})
+
+FIND_LIBRARY(crypt NAMES crypt)
+IF(crypt STREQUAL "crypt-NOTFOUND")
+  SET(crypt "")
+ENDIF()
+
+TARGET_LINK_LIBRARIES(uwsd ${ubox} ${ucode} ${jsonc} ${ssl} ${crypto} ${crypt})

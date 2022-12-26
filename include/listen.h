@@ -72,6 +72,7 @@ typedef struct {
 	} addr;
 	uwsd_socket_t *socket;
 	struct list_head upstream;
+	struct list_head auth;
 } uwsd_endpoint_t;
 
 typedef struct {
