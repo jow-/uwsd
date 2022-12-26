@@ -71,15 +71,27 @@ ssl_perror(const char *fmt, ...)
 static SSL_CTX *
 ssl_lookup_context_by_hostname(const char *hostname);
 
+static const char *
+ssl_get_subject_cn(X509_NAME *subj);
+
 /* SNI callback */
 static int
 servername_cb(SSL *ssl, int *al, void *arg)
 {
 	const char *hostname = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
+	uwsd_client_context_t *cl = arg;
 	SSL_CTX *tls_ctx;
+	X509_NAME *i, *n;
 
 	if (hostname) {
 		tls_ctx = ssl_lookup_context_by_hostname(hostname);
+		n = X509_get_subject_name(SSL_CTX_get0_certificate(tls_ctx));
+		i = X509_get_issuer_name(SSL_CTX_get0_certificate(tls_ctx));
+
+		client_debug(cl, "SNI: selecting cert '%s' by '%s' for server name '%s'",
+			n ? ssl_get_subject_cn(n) : NULL,
+			i ? ssl_get_subject_cn(i) : NULL,
+			hostname);
 
 		SSL_set_SSL_CTX(ssl, tls_ctx);
 	}
@@ -112,8 +124,6 @@ ssl_create_context(void)
 #if 0
 	SSL_CTX_set_cipher_list(tls_ctx, ssl_tlsciphers);
 #endif
-
-	SSL_CTX_set_tlsext_servername_callback(tls_ctx, servername_cb);
 
 	return tls_ctx;
 
@@ -222,6 +232,7 @@ uwsd_ssl_load_certificates(const char *directory)
 	X509_STORE *store = NULL;
 	SSL_CTX *ssl_ctx = NULL;
 	EVP_PKEY *pkey = NULL;
+	X509_NAME *n, *i;
 
 	if (!ssl_initialized) {
 		SSL_load_error_strings();
@@ -303,6 +314,14 @@ uwsd_ssl_load_certificates(const char *directory)
 
 		fclose(fp);
 
+		n = X509_get_subject_name(SSL_CTX_get0_certificate(ssl_ctx));
+		i = X509_get_issuer_name(SSL_CTX_get0_certificate(ssl_ctx));
+
+		fprintf(stderr, "SSL: loading certificate '%s' by '%s' from '%s'\n",
+			n ? ssl_get_subject_cn(n) : NULL,
+			i ? ssl_get_subject_cn(i) : NULL,
+			path);
+
 		certs = xrealloc(certs, sizeof(*certs) * (num_certs + 1));
 		certs[num_certs++] = ssl_ctx;
 
@@ -339,11 +358,25 @@ ssl_require_mtls(uwsd_client_context_t *cl)
 __hidden bool
 uwsd_ssl_init(uwsd_client_context_t *cl)
 {
+	char buf[INET6_ADDRSTRLEN];
 	uwsd_auth_t *auth;
+	X509_NAME *n, *i;
 	SSL_CTX *tls_ctx;
 	SSL *ssl = NULL;
 
 	tls_ctx = ssl_lookup_context_by_sockaddr(&cl->sa.unspec);
+
+	n = X509_get_subject_name(SSL_CTX_get0_certificate(tls_ctx));
+	i = X509_get_issuer_name(SSL_CTX_get0_certificate(tls_ctx));
+
+	client_debug(cl, "SSL: selecting cert '%s' by '%s' for IP address '%s'",
+		n ? ssl_get_subject_cn(n) : NULL,
+		i ? ssl_get_subject_cn(i) : NULL,
+		inet_ntop(cl->sa.unspec.sa_family, &cl->sa.in6.sin6_addr, buf, sizeof(buf)));
+
+	SSL_CTX_set_tlsext_servername_callback(tls_ctx, servername_cb);
+	SSL_CTX_set_tlsext_servername_arg(tls_ctx, cl);
+
 	ssl = SSL_new(tls_ctx);
 
 	if (!ssl)
