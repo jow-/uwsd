@@ -22,6 +22,7 @@
 #include "http.h"
 #include "ws.h"
 #include "client.h"
+#include "log.h"
 
 #define DOWNSTREAM_IDLE_TIMEOUT_MS 60000
 #define DOWNSTREAM_HEAD_TIMEOUT_MS 1000
@@ -164,10 +165,10 @@ static const uwsd_state_entry_t states[] = {
 	}
 };
 
+#ifndef NDEBUG
 static const char *
 state_name(uwsd_connection_state_t state)
 {
-#ifndef NDEBUG
 # define STATE(name)	#name
 	const char *statenames[] = {
 		CONN_STATE_LIST
@@ -175,10 +176,8 @@ state_name(uwsd_connection_state_t state)
 
 	return statenames[state];
 # undef STATE
-#else
-	return NULL;
-#endif
 }
+#endif
 
 static void
 upstream_ufd_cb(struct uloop_fd *ufd, unsigned int events)
@@ -231,7 +230,7 @@ uwsd_state_transition(uwsd_client_context_t *cl, uwsd_connection_state_t state)
 		((se->events & EVENT_WRITABLE) ? ULOOP_WRITE : 0) |
 		((se->events & EVENT_READABLE) ? ULOOP_READ : 0);
 
-	if (1) client_debug(cl, "IO state %s -> %s [Td: %lldms] [Tu: %lldms]",
+	uwsd_log_debug(cl, "IO state %s -> %s [Td: %lldms] [Tu: %lldms]",
 		state_name(cl->state), state_name(state),
 		uloop_timeout_remaining64(&cl->downstream.utm),
 		uloop_timeout_remaining64(&cl->upstream.utm)

@@ -233,16 +233,3 @@ pathmatch(const char *prefix, const char *path)
 
 	return prefixlen;
 }
-
-__hidden __attribute__((format(printf, 1, 0))) void
-sys_perror(const char *fmt, ...)
-{
-	int err = errno;
-	va_list ap;
-
-	va_start(ap, fmt);
-	vfprintf(stderr, fmt, ap);
-	va_end(ap);
-
-	fprintf(stderr, ": %s\n", strerror(err));
-}

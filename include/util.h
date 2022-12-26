@@ -62,6 +62,6 @@ ssize_t_min(ssize_t a, ssize_t b)
 	return (a < b) ? a : b;
 }
 
-__hidden __attribute__((format(printf, 1, 0))) void sys_perror(const char *, ...);
+#define sys_perror(fmt, ...) uwsd_log_err(NULL, fmt ": %m", ##__VA_ARGS__)
 
 #endif /* UWSD_UTIL_H */

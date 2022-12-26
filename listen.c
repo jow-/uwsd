@@ -28,6 +28,7 @@
 #include "listen.h"
 #include "client.h"
 #include "config.h"
+#include "log.h"
 
 static LIST_HEAD(uwsd_endpoints);
 static LIST_HEAD(uwsd_sockets);
@@ -52,7 +53,7 @@ socket_lookup(const char *addr, size_t addrlen, const char *port, size_t portlen
 static void *
 parse_error(const char *msg)
 {
-	fprintf(stderr, "Invalid endpoint specification: %s\n", msg);
+	uwsd_log_err(NULL, "Invalid endpoint specification: %s", msg);
 
 	return NULL;
 }
@@ -69,19 +70,12 @@ accept_cb(struct uloop_fd *ufd, unsigned int events)
 	fd = accept(ufd->fd, &sa, &alen);
 
 	if (fd == -1) {
-		fprintf(stderr, "accept failed: %s\n", strerror(errno));
+		uwsd_log_err(NULL, "accept failed: %m");
 
 		return;
 	}
 
-	// FIXME: infinite loop here
 	list_for_each_entry(ep, &config->endpoints, list) {
-		fprintf(stderr, "ep %p\n", ep);
-		//	ep
-		//fprintf(stderr, "[%s:%s] ep %p / ep->socket %p / ep->socket->ufd %p / ufd %p\n",
-		//	ep->socket->addr, ep->socket->port,
-		//	ep, ep->socket, &ep->socket->ufd, ufd);
-
 		if (&ep->socket->ufd != ufd)
 			continue;
 
@@ -205,7 +199,7 @@ uwsd_endpoint_url_parse(uwsd_endpoint_t *ep, const char *spec)
 		sk = calloc_a(sizeof(*sk), &_addr, addrlen + 1, &_port, portlen + 1);
 
 		if (!sk) {
-			fprintf(stderr, "Unable to allocate socket structure\n");
+			uwsd_log_err(NULL, "Unable to allocate socket structure");
 
 			return false;
 		}
@@ -218,9 +212,7 @@ uwsd_endpoint_url_parse(uwsd_endpoint_t *ep, const char *spec)
 			sk->addr, sk->port);
 
 		if (sk->ufd.fd == -1) {
-			fprintf(stderr, "Unable to listen on %s:%s: %s\n",
-				sk->addr, sk->port, strerror(errno));
-
+			uwsd_log_err(NULL, "Unable to listen on %s:%s: %m", sk->addr, sk->port);
 			free(sk);
 
 			return false;
@@ -229,8 +221,6 @@ uwsd_endpoint_url_parse(uwsd_endpoint_t *ep, const char *spec)
 		uloop_fd_add(&sk->ufd, ULOOP_READ);
 		list_add_tail(&sk->list, &uwsd_sockets);
 	}
-
-	fprintf(stderr, "ep %p / ep->socket = %p\n", ep, sk);
 
 	ep->type = type;
 	ep->socket = sk;

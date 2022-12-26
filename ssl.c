@@ -36,6 +36,7 @@
 #include "ssl.h"
 #include "config.h"
 #include "auth.h"
+#include "log.h"
 
 
 static bool ssl_initialized = false;
@@ -56,17 +57,7 @@ ssl_error(void)
 	return (char *)ERR_error_string(ERR_get_error(), NULL);
 }
 
-static void
-ssl_perror(const char *fmt, ...)
-{
-	va_list ap;
-
-	va_start(ap, fmt);
-	vfprintf(stderr, fmt, ap);
-	va_end(ap);
-
-	fprintf(stderr, ": %s\n", ssl_error());
-}
+#define ssl_perror(fmt, ...) uwsd_ssl_err(NULL, fmt ": %s", ##__VA_ARGS__, ssl_error())
 
 static SSL_CTX *
 ssl_lookup_context_by_hostname(const char *hostname);
@@ -79,19 +70,21 @@ static int
 servername_cb(SSL *ssl, int *al, void *arg)
 {
 	const char *hostname = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
-	uwsd_client_context_t *cl = arg;
 	SSL_CTX *tls_ctx;
-	X509_NAME *i, *n;
 
 	if (hostname) {
 		tls_ctx = ssl_lookup_context_by_hostname(hostname);
-		n = X509_get_subject_name(SSL_CTX_get0_certificate(tls_ctx));
-		i = X509_get_issuer_name(SSL_CTX_get0_certificate(tls_ctx));
 
-		client_debug(cl, "SNI: selecting cert '%s' by '%s' for server name '%s'",
+#ifndef NDEBUG
+		X509_NAME *n = X509_get_subject_name(SSL_CTX_get0_certificate(tls_ctx));
+		X509_NAME *i = X509_get_issuer_name(SSL_CTX_get0_certificate(tls_ctx));
+		uwsd_client_context_t *cl = arg;
+
+		uwsd_ssl_debug(cl, "SNI: selecting cert '%s' by '%s' for server name '%s'",
 			n ? ssl_get_subject_cn(n) : NULL,
 			i ? ssl_get_subject_cn(i) : NULL,
 			hostname);
+#endif
 
 		SSL_set_SSL_CTX(ssl, tls_ctx);
 	}
@@ -200,7 +193,7 @@ ssl_lookup_context_by_hostname(const char *hostname)
 			if (ssl_match_context(certs[i], NULL, hostname))
 				return certs[i];
 
-		fprintf(stderr, "No matching certificate for hostname '%s' - using first one\n", hostname);
+		uwsd_ssl_debug(NULL, "No matching certificate for hostname '%s' - using first one\n", hostname);
 	}
 
 	return certs[0];
@@ -317,7 +310,7 @@ uwsd_ssl_load_certificates(const char *directory)
 		n = X509_get_subject_name(SSL_CTX_get0_certificate(ssl_ctx));
 		i = X509_get_issuer_name(SSL_CTX_get0_certificate(ssl_ctx));
 
-		fprintf(stderr, "SSL: loading certificate '%s' by '%s' from '%s'\n",
+		uwsd_ssl_info(NULL, "loading certificate '%s' by '%s' from '%s'",
 			n ? ssl_get_subject_cn(n) : NULL,
 			i ? ssl_get_subject_cn(i) : NULL,
 			path);
@@ -358,21 +351,22 @@ ssl_require_mtls(uwsd_client_context_t *cl)
 __hidden bool
 uwsd_ssl_init(uwsd_client_context_t *cl)
 {
-	char buf[INET6_ADDRSTRLEN];
 	uwsd_auth_t *auth;
-	X509_NAME *n, *i;
 	SSL_CTX *tls_ctx;
 	SSL *ssl = NULL;
 
 	tls_ctx = ssl_lookup_context_by_sockaddr(&cl->sa.unspec);
 
-	n = X509_get_subject_name(SSL_CTX_get0_certificate(tls_ctx));
-	i = X509_get_issuer_name(SSL_CTX_get0_certificate(tls_ctx));
+#ifndef NDEBUG
+	X509_NAME *n = X509_get_subject_name(SSL_CTX_get0_certificate(tls_ctx));
+	X509_NAME *i = X509_get_issuer_name(SSL_CTX_get0_certificate(tls_ctx));
+	char buf[INET6_ADDRSTRLEN];
 
-	client_debug(cl, "SSL: selecting cert '%s' by '%s' for IP address '%s'",
+	uwsd_ssl_debug(cl, "selecting cert '%s' by '%s' for IP address '%s'",
 		n ? ssl_get_subject_cn(n) : NULL,
 		i ? ssl_get_subject_cn(i) : NULL,
 		inet_ntop(cl->sa.unspec.sa_family, &cl->sa.in6.sin6_addr, buf, sizeof(buf)));
+#endif
 
 	SSL_CTX_set_tlsext_servername_callback(tls_ctx, servername_cb);
 	SSL_CTX_set_tlsext_servername_arg(tls_ctx, cl);
@@ -386,14 +380,16 @@ uwsd_ssl_init(uwsd_client_context_t *cl)
 
 	auth = ssl_require_mtls(cl);
 
-	client_debug(cl, "Require auth");
+	if (auth) {
+		uwsd_ssl_debug(cl, "peer verification required");
 
-	if (auth)
 		SSL_set_verify(ssl,
 			SSL_VERIFY_PEER|SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
 			NULL);
-	else
+	}
+	else {
 		SSL_set_verify(ssl, SSL_VERIFY_NONE, NULL);
+	}
 
 	cl->downstream.ssl = ssl;
 
@@ -444,7 +440,7 @@ uwsd_ssl_accept(uwsd_client_context_t *cl)
 
 	default:
 		errno = EINVAL;
-		client_debug(cl, "SSL_accept(): %s", ssl_error());
+		uwsd_ssl_err(cl, "SSL_accept(): %s", ssl_error());
 
 		return false;
 	}

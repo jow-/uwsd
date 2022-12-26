@@ -102,7 +102,6 @@ typedef struct uwsd_client_context {
 } uwsd_client_context_t;
 
 __hidden void client_create(int, struct uloop_fd *, struct sockaddr *, size_t, bool);
-__hidden void client_debug(uwsd_client_context_t *, const char *, ...);
 __hidden void client_free(uwsd_client_context_t *, const char *, ...);
 __hidden void client_free_all(void);
 

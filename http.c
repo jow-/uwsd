@@ -34,6 +34,7 @@
 #include "state.h"
 #include "config.h"
 #include "auth.h"
+#include "log.h"
 
 #define HTTP_METHOD(name) { #name, sizeof(#name) - 1, HTTP_##name }
 
@@ -74,7 +75,7 @@ http_state_name(uwsd_http_state_t state)
 static void
 http_state_transition(uwsd_client_context_t *cl, uwsd_http_state_t state)
 {
-	client_debug(cl, "HTTP state %s -> %s",
+	uwsd_http_debug(cl, "state %s -> %s",
 		http_state_name(cl->http.state),
 		http_state_name(state));
 
@@ -600,7 +601,7 @@ http_request_recv(uwsd_client_context_t *cl)
 				else
 					http_failure(cl, 505, "HTTP Version Not Supported", "Requested protocol version not implemented");
 
-				client_debug(cl, "> %s %s",
+				uwsd_http_info(cl, "> %s %s",
 					http_request_methods[cl->request_method].name,
 					cl->request_uri);
 
@@ -685,7 +686,7 @@ http_response_recv(uwsd_client_context_t *cl)
 				"Upstream receive error: %s", strerror(errno));
 
 		if (rlen == 0) {
-			client_debug(cl, "upstream closed connection");
+			uwsd_log_info(cl, "upstream closed connection");
 
 			http_state_reset(cl, STATE_HTTP_REQUEST_METHOD);
 			uwsd_script_close(cl);
@@ -785,7 +786,7 @@ http_response_recv(uwsd_client_context_t *cl)
 
 		case STATE_HTTP_STATUSLINE_LF:
 			if (*off == '\n') {
-				client_debug(cl, "< %03hu %s", cl->http_status, cl->request_uri);
+				uwsd_http_info(cl, "< %03hu %s", cl->http_status, cl->request_uri);
 				http_state_transition(cl, STATE_HTTP_HEADERLINE);
 			}
 			else
@@ -893,7 +894,7 @@ uwsd_http_reply_start(uwsd_client_context_t *cl, uint16_t code, const char *reas
 {
 	size_t len;
 
-	client_debug(cl, "R %03hu %s", code, reason ? reason : "-");
+	uwsd_http_info(cl, "R %03hu %s", code, reason ? reason : "-");
 
 	len = snprintf((char *)cl->rxbuf.data, sizeof(cl->rxbuf.data),
 		"HTTP/%hu.%hu %hu %s\r\n",
@@ -952,7 +953,7 @@ uwsd_http_reply_send(uwsd_client_context_t *cl, bool error)
 	ssize_t wlen = client_send(&cl->downstream, cl->rxbuf.pos, len);
 
 	if (wlen != len) {
-		client_debug(cl, "downstream congested, delay sending %zd bytes [%s]",
+		uwsd_http_debug(cl, "downstream congested, delay sending %zd bytes [%s]",
 			len - (wlen > 0 ? wlen : 0),
 			(wlen < 0) ? strerror(errno) : "short write");
 
@@ -983,7 +984,7 @@ uwsd_http_error_send(uwsd_client_context_t *cl, uint16_t code, const char *reaso
 	va_list ap;
 	size_t len;
 
-	client_debug(cl, "E %03hu %s", code, reason ? reason : "-");
+	uwsd_http_info(cl, "E %03hu %s", code, reason ? reason : "-");
 
 	len = snprintf((char *)cl->rxbuf.data, sizeof(cl->rxbuf.data),
 		"HTTP/%hu.%hu %hu %s\r\n"
@@ -1068,13 +1069,13 @@ determine_path(uwsd_client_context_t *cl)
 	}
 
 	if (base && path && !pathmatch(base, path)) {
-		client_debug(cl, "rejecting path: %s", path);
+		uwsd_http_debug(cl, "rejecting path: %s", path);
 		free(path);
 		path = NULL;
 		errno = ENOENT;
 	}
 	else {
-		client_debug(cl, "resolved path: %s", path);
+		uwsd_http_debug(cl, "resolved path: %s", path);
 	}
 
 	free(url);
@@ -1090,7 +1091,7 @@ http_proxy_connect(uwsd_client_context_t *cl)
 	uwsd_backend_t *be = uwsd_endpoint_backend_get(cl->endpoint);
 
 	if (cl->upstream.ufd.fd == -1) {
-		client_debug(cl, "connecting to upstream HTTP server %s:%s",
+		uwsd_http_debug(cl, "connecting to upstream HTTP server %s:%s",
 			be->addr, be->port);
 
 		cl->upstream.ufd.fd = usock(USOCK_TCP|USOCK_NONBLOCK,
@@ -1344,8 +1345,6 @@ uwsd_http_state_response_send(uwsd_client_context_t *cl, uwsd_connection_state_t
 	ssize_t len = cl->rxbuf.end - cl->rxbuf.pos;
 	ssize_t wlen = client_send(&cl->downstream, cl->rxbuf.pos, len);
 
-	client_debug(cl, "send(%zd) delayed [%zd sent]", len, wlen);
-
 	if (wlen == -1) {
 		/* Ignore retryable errors */
 		if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
@@ -1415,7 +1414,7 @@ uwsd_http_state_response_sendfile(uwsd_client_context_t *cl, uwsd_connection_sta
 
 	if (wlen == -1) {
 		if (errno == EINVAL || errno == ENOSYS) {
-			client_debug(cl, "sendfile(): %s - falling back to recv()/send()", strerror(errno));
+			uwsd_http_debug(cl, "sendfile(): %s - falling back to recv()/send()", strerror(errno));
 			uwsd_state_transition(cl, STATE_CONN_REPLY_FILECOPY);
 		}
 		else if (errno != EAGAIN) {
@@ -1512,9 +1511,10 @@ uwsd_http_state_upstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t
 		case STATE_HTTP_REQUEST_DONE:
 			http_state_transition(cl, STATE_HTTP_STATUS_VERSION);
 
-			if (cl->rxbuf.pos != cl->rxbuf.end)
-				client_debug(cl, "Remaining buffer contents (%zd), pipeline request?",
+			if (cl->rxbuf.pos != cl->rxbuf.end) {
+				uwsd_http_debug(cl, "Remaining buffer contents (%zd), pipeline request?",
 					cl->rxbuf.end - cl->rxbuf.pos);
+			}
 
 			http_state_reset(cl, STATE_HTTP_STATUS_VERSION);
 

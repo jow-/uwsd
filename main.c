@@ -21,10 +21,13 @@
 #include "client.h"
 #include "ssl.h"
 #include "config.h"
+#include "log.h"
 
 
 static struct option uwsd_options[] = {
 	{ "config", required_argument, NULL, 0 },
+	{ "log-priority", required_argument, NULL, 1 },
+	{ "log-channel", required_argument, NULL, 2 },
 	{ 0 }
 };
 
@@ -42,6 +45,7 @@ int
 main(int argc, char **argv)
 {
 	int opt, option_index = 0;
+	unsigned int channels = 0;
 
 	uloop_init();
 
@@ -54,6 +58,30 @@ main(int argc, char **argv)
 
 			if (!uwsd_config_parse(optarg))
 				exit(1);
+		}
+		else if (opt == 1) {
+			if (!strcmp(optarg, "debug"))
+				uwsd_logging_priority = UWSD_PRIO_DBG;
+			else if (!strcmp(optarg, "info"))
+				uwsd_logging_priority = UWSD_PRIO_INFO;
+			else if (!strcmp(optarg, "warn"))
+				uwsd_logging_priority = UWSD_PRIO_WARN;
+			else if (!strcmp(optarg, "err"))
+				uwsd_logging_priority = UWSD_PRIO_ERR;
+			else
+				fatal("Invalid log priority, expecting 'debug', 'info', 'warn' or 'err'");
+		}
+		else if (opt == 2) {
+			if (!strcmp(optarg, "global"))
+				channels |= (1 << UWSD_LOG_GLOBAL);
+			else if (!strcmp(optarg, "http"))
+				channels |= (1 << UWSD_LOG_HTTP);
+			else if (!strcmp(optarg, "ws"))
+				channels |= (1 << UWSD_LOG_WS);
+			else if (!strcmp(optarg, "ssl"))
+				channels |= (1 << UWSD_LOG_SSL);
+			else
+				fatal("Invalid log channel, expecting 'global', 'http', 'ws' or 'ssl'");
 		}
 		else if (opt == -1) {
 			break;
@@ -68,6 +96,9 @@ main(int argc, char **argv)
 
 	if (list_empty(&config->endpoints))
 		fatal("No endpoints defined in configuration, aborting");
+
+	if (channels)
+		uwsd_logging_channels = channels;
 
 	uloop_run();
 

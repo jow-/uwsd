@@ -26,6 +26,7 @@
 #include "listen.h"
 #include "ssl.h"
 #include "auth.h"
+#include "log.h"
 
 
 uwsd_config_t *config;
@@ -59,19 +60,7 @@ typedef struct config_block {
 
 
 
-static bool __attribute__((format(printf, 1, 0)))
-parse_error(const char *fmt, ...)
-{
-	va_list ap;
-
-	va_start(ap, fmt);
-	vfprintf(stderr, fmt, ap);
-	va_end(ap);
-
-	fprintf(stderr, "\n");
-
-	return false;
-}
+#define parse_error(fmt, ...) (uwsd_log_err(NULL, fmt, ##__VA_ARGS__), false)
 
 static bool
 add_certdir(const config_prop_t *spec, void *base, const char *dir)
@@ -497,8 +486,8 @@ print_error_pos(const char *input, const char *off)
 		}
 	}
 
-	fprintf(stderr, "In line %zu, byte %zu.\n", line, byte);
-	fprintf(stderr, "Near here:\n\n  `%.*s`\n\n", (int)strcspn(input, "\n"), input);
+	uwsd_log_err(NULL, "In line %zu, byte %zu.\n", line, byte);
+	uwsd_log_err(NULL, "Near here:\n\n  `%.*s`\n\n", (int)strcspn(input, "\n"), input);
 }
 
 

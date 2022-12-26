@@ -30,38 +30,9 @@
 #include "http.h"
 #include "ws.h"
 #include "ssl.h"
+#include "log.h"
 
 static LIST_HEAD(clients);
-
-__hidden void
-client_debug(uwsd_client_context_t *cl, const char *fmt, ...)
-{
-#ifndef NDEBUG
-	char abuf[INET6_ADDRSTRLEN];
-	struct timeval tv = { 0 };
-	va_list ap;
-
-	gettimeofday(&tv, NULL);
-
-	fprintf(stderr, "[%010ld.%04ld] ",
-		(long)tv.tv_sec, (long)tv.tv_usec / 1000);
-
-	if (cl->sa.unspec.sa_family == AF_INET6)
-		fprintf(stderr, "[%s]:%hu  ",
-			inet_ntop(AF_INET6, &cl->sa.in6.sin6_addr, abuf, sizeof(abuf)),
-			ntohs(cl->sa.in6.sin6_port));
-	else
-		fprintf(stderr, "%s:%hu  ",
-			inet_ntop(AF_INET, &cl->sa.in.sin_addr, abuf, sizeof(abuf)),
-			ntohs(cl->sa.in.sin_port));
-
-	va_start(ap, fmt);
-	vfprintf(stderr, fmt, ap);
-	va_end(ap);
-
-	fprintf(stderr, "\n");
-#endif
-}
 
 __hidden void
 client_create(int fd, struct uloop_fd *srv, struct sockaddr *peeraddr, size_t alen, bool ssl)
@@ -88,7 +59,7 @@ client_create(int fd, struct uloop_fd *srv, struct sockaddr *peeraddr, size_t al
 
 	list_add_tail(&cl->list, &clients);
 
-	client_debug(cl, "connected");
+	uwsd_log_debug(cl, "connected");
 
 	if (ssl && !uwsd_ssl_init(cl))
 		return;
@@ -111,7 +82,7 @@ client_free(uwsd_client_context_t *cl, const char *reason, ...)
 		va_end(ap);
 	}
 
-	client_debug(cl, "destroying context: %s", msg ? msg : "unspecified reason");
+	uwsd_log_debug(cl, "destroying context: %s", msg ? msg : "unspecified reason");
 	free(msg);
 #endif
 

@@ -125,7 +125,6 @@ uwsd_file_if_none_match(uwsd_client_context_t *cl, struct stat *s)
 
 	if (uwsd_http_header_contains(cl, "If-None-Match", "*") ||
 	    uwsd_http_header_contains(cl, "If-None-Match", tag)) {
-		client_debug(cl, "EEEK If-None-Match %d", cl->request_method);
 		if (cl->request_method == HTTP_GET || cl->request_method == HTTP_HEAD) {
 			uwsd_http_reply_start(cl, 304, "Not Modified");
 			uwsd_http_reply_header(cl, "ETag", tag);

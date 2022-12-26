@@ -22,6 +22,7 @@
 #include "auth.h"
 #include "http.h"
 #include "ssl.h"
+#include "log.h"
 
 static char *
 auth_www_authenticate_hdr(const char *realm)
@@ -57,7 +58,7 @@ auth_check_credentials(uwsd_client_context_t *cl, uwsd_auth_t *auth,
 	char *hash;
 
 	if (strcmp(auth->data.basic.username, username)) {
-		client_debug(cl, "Authentication failure: wrong username '%s'", username);
+		uwsd_http_warn(cl, "Authentication failure: wrong username '%s'", username);
 
 		return false;
 	}
@@ -66,7 +67,7 @@ auth_check_credentials(uwsd_client_context_t *cl, uwsd_auth_t *auth,
 		sp = getspnam(username);
 
 		if (!sp) {
-			client_debug(cl, "Authentication failure: unknown shadow user '%s'", username);
+			uwsd_http_warn(cl, "Authentication failure: unknown shadow user '%s'", username);
 
 			return false;
 		}
@@ -74,14 +75,14 @@ auth_check_credentials(uwsd_client_context_t *cl, uwsd_auth_t *auth,
 		hash = crypt(password, sp->sp_pwdp);
 
 		if (strcmp(hash, sp->sp_pwdp)) {
-			client_debug(cl, "Authentication failure: invalid password for user '%s'", username);
+			uwsd_http_warn(cl, "Authentication failure: invalid password for user '%s'", username);
 
 			return false;
 		}
 	}
 	else {
 		if (strcmp(auth->data.basic.password, password)) {
-			client_debug(cl, "Authentication failure: invalid password for user '%s'", username);
+			uwsd_http_warn(cl, "Authentication failure: invalid password for user '%s'", username);
 
 			return false;
 		}
@@ -165,7 +166,7 @@ auth_check_mtls(uwsd_client_context_t *cl)
 				p = uwsd_ssl_peer_subject_name(&cl->downstream);
 
 				if (!p || fnmatch(auth->data.mtls.require_cn, p, FNM_NOESCAPE) == FNM_NOMATCH) {
-					client_debug(cl,
+					uwsd_ssl_warn(cl,
 						"Authentication failure: peer CN '%s' not matching '%s'",
 						p, auth->data.mtls.require_cn);
 
@@ -177,7 +178,7 @@ auth_check_mtls(uwsd_client_context_t *cl)
 				p = uwsd_ssl_peer_issuer_name(&cl->downstream);
 
 				if (!p || fnmatch(auth->data.mtls.require_ca, p, FNM_NOESCAPE) == FNM_NOMATCH) {
-					client_debug(cl,
+					uwsd_ssl_warn(cl,
 						"Authentication failure: peer issuer '%s' not matching '%s'",
 						p, auth->data.mtls.require_ca);
 

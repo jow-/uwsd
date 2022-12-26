@@ -30,6 +30,7 @@
 #include "ws.h"
 #include "state.h"
 #include "script.h"
+#include "log.h"
 
 #include "teeny-sha1.h"
 
@@ -55,7 +56,7 @@ ws_state_name(uwsd_ws_state_t state)
 static void
 ws_state_transition(uwsd_client_context_t *cl, uwsd_ws_state_t state)
 {
-	client_debug(cl, "WS state %s -> %s",
+	uwsd_ws_debug(cl, "state %s -> %s",
 		ws_state_name(cl->ws.state),
 		ws_state_name(state));
 
@@ -380,10 +381,12 @@ ws_downstream_tx(uwsd_client_context_t *cl, uwsd_ws_opcode_t opcode, bool add_he
 	errno = 0;
 
 	if (!list_empty(&cl->ws.txq) || !send_iov(&cl->downstream, iov, iolen)) {
-		if (!list_empty(&cl->ws.txq))
-			client_debug(cl, "TX in progress (qlen %zu), delaying send...", cl->ws.txqlen);
-		else
-			client_debug(cl, "Partial TX, delaying sending remainder...");
+		if (!list_empty(&cl->ws.txq)) {
+			uwsd_ws_debug(cl, "TX in progress (qlen %zu), delaying send...", cl->ws.txqlen);
+		}
+		else {
+			uwsd_ws_debug(cl, "Partial TX, delaying sending remainder...");
+		}
 
 		if (errno)
 			ws_terminate(cl, STATUS_TERMINATED, "Peer send error: %s", strerror(errno));
@@ -459,17 +462,17 @@ uwsd_ws_connection_accept(uwsd_client_context_t *cl)
 	if (be->type == UWSD_BACKEND_TCP) {
 		socktype = USOCK_TCP|USOCK_NONBLOCK;
 
-		client_debug(cl, "connecting to upstream TCP server %s:%s",
+		uwsd_ws_debug(cl, "connecting to upstream TCP server %s:%s",
 			be->addr, be->port);
 	}
 	else if (be->type == UWSD_BACKEND_UDP) {
 		socktype = USOCK_UDP|USOCK_NONBLOCK;
 
-		client_debug(cl, "connecting to upstream UDP server %s:%s",
+		uwsd_ws_debug(cl, "connecting to upstream UDP server %s:%s",
 			be->addr, be->port);
 	}
 	else if (be->type == UWSD_BACKEND_UNIX) {
-		client_debug(cl, "connecting to UNIX domain socket %s",
+		uwsd_ws_debug(cl, "connecting to UNIX domain socket %s",
 			be->addr);
 
 		socktype = USOCK_UNIX|USOCK_NONBLOCK;
@@ -655,12 +658,12 @@ uwsd_ws_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t s
 
 			if (rlen == -1) {
 				if (errno != EAGAIN && errno != EWOULDBLOCK)
-					client_debug(cl, "Waker pipe read error: %s", strerror(errno));
+					uwsd_ws_err(cl, "Waker pipe read error: %s", strerror(errno));
 
 				break;
 			}
 
-			client_debug(cl, "Script wakeup signal: %c", c);
+			uwsd_ws_debug(cl, "Script wakeup signal: %c", c);
 		}
 
 		uwsd_state_transition(cl, STATE_CONN_WS_DOWNSTREAM_SEND);
