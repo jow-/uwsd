@@ -21,6 +21,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <assert.h>
+#include <fnmatch.h>
 
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -32,9 +33,9 @@
 #include "http.h"
 #include "file.h"
 #include "state.h"
-#include "config.h"
 #include "auth.h"
 #include "log.h"
+#include "script.h"
 
 #define HTTP_METHOD(name) { #name, sizeof(#name) - 1, HTTP_##name }
 
@@ -231,12 +232,12 @@ http_has_message_body(uint16_t code)
 static bool
 http_request_data_callback(uwsd_client_context_t *cl, uwsd_connection_t *conn, void *data, size_t len)
 {
-	uwsd_backend_t *be = uwsd_endpoint_backend_get(cl->endpoint);
+	uwsd_action_t *action = cl->action;
 
 	if (conn == &cl->upstream)
 		return true;
 
-	if (!be || be->type != UWSD_BACKEND_SCRIPT)
+	if (!action || action->type != UWSD_ACTION_SCRIPT)
 		return true;
 
 	return uwsd_script_bodydata(cl, data, len);
@@ -696,7 +697,7 @@ http_response_recv(uwsd_client_context_t *cl)
 				cl->upstream.ufd.fd = -1;
 			}
 
-			cl->endpoint = NULL;
+			cl->action = NULL;
 
 			uwsd_state_transition(cl, STATE_CONN_REQUEST);
 
@@ -1021,9 +1022,9 @@ uwsd_http_error_send(uwsd_client_context_t *cl, uint16_t code, const char *reaso
 static char *
 determine_path(uwsd_client_context_t *cl)
 {
-	uwsd_backend_t *be = uwsd_endpoint_backend_get(cl->endpoint);
-	size_t dst_len = strlen(be->addr);
-	size_t pfx_len = strlen(cl->endpoint->prefix);
+	uwsd_action_t *action = cl->action;
+	char *dst = (action->type == UWSD_ACTION_FILE) ? action->data.file : action->data.directory;
+	size_t pfx_len = strlen(cl->prefix);
 	char *url = NULL, *path = NULL, *base = NULL;
 	size_t req_len = 0;
 
@@ -1037,7 +1038,7 @@ determine_path(uwsd_client_context_t *cl)
 	req_len = strcspn(url, "?");
 	url[req_len] = 0;
 
-	base = pathexpand(be->addr, NULL);
+	base = pathexpand(dst, NULL);
 
 	if (!base) {
 		errno = ENOMEM;
@@ -1046,9 +1047,9 @@ determine_path(uwsd_client_context_t *cl)
 	}
 
 	/* destination is a directory */
-	if (dst_len && be->addr[dst_len - 1] == '/') {
+	if (action->type == UWSD_ACTION_DIRECTORY) {
 		/* backend path prefix is a directory */
-		if (pfx_len && cl->endpoint->prefix[pfx_len - 1] == '/') {
+		if (pfx_len && cl->prefix[pfx_len - 1] == '/') {
 			if (req_len <= pfx_len)
 				path = pathexpand("index.html", base);
 			else
@@ -1086,16 +1087,76 @@ determine_path(uwsd_client_context_t *cl)
 }
 
 static bool
+test_match(uwsd_client_context_t *cl, uwsd_match_t *match)
+{
+	char *val;
+
+	switch (match->type) {
+	case UWSD_MATCH_PROTOCOL:
+		return (match->data.protocol == cl->protocol);
+
+	case UWSD_MATCH_HOSTNAME:
+		val = uwsd_http_header_lookup(cl, "Host");
+
+		return (fnmatch(match->data.value, val ? val : cl->listener->hostname, FNM_CASEFOLD) == 0);
+
+	case UWSD_MATCH_PATH:
+		return (pathmatch(match->data.value, cl->request_uri) > 0);
+	}
+
+	return false;
+}
+
+static void
+resolve_match(uwsd_client_context_t *cl, struct list_head *matches);
+
+static void
+resolve_match(uwsd_client_context_t *cl, struct list_head *matches)
+{
+	uwsd_match_t *match;
+
+	list_for_each_entry(match, matches, list) {
+		if (test_match(cl, match)) {
+			if (match->default_action) {
+				cl->action = match->default_action;
+
+				if (match->type == UWSD_MATCH_PATH)
+					cl->prefix = match->data.value;
+
+				if (!list_empty(&match->auth))
+					cl->auths = &match->auth;
+			}
+
+			resolve_match(cl, &match->matches);
+			break;
+		}
+	}
+}
+
+static void
+resolve_action(uwsd_client_context_t *cl)
+{
+	cl->prefix = "/";
+	cl->action = cl->listener->default_action;
+
+	if (!list_empty(&cl->listener->auth))
+		cl->auths = &cl->listener->auth;
+
+	resolve_match(cl, &cl->listener->matches);
+}
+
+static bool
 http_proxy_connect(uwsd_client_context_t *cl)
 {
-	uwsd_backend_t *be = uwsd_endpoint_backend_get(cl->endpoint);
+	uwsd_action_t *action = cl->action;
 
 	if (cl->upstream.ufd.fd == -1) {
-		uwsd_http_debug(cl, "connecting to upstream HTTP server %s:%s",
-			be->addr, be->port);
+		uwsd_http_debug(cl, "connecting to upstream HTTP server %s:%hu",
+			action->data.proxy.hostname, action->data.proxy.port);
 
 		cl->upstream.ufd.fd = usock(USOCK_TCP|USOCK_NONBLOCK,
-			be->addr, be->port);
+			action->data.proxy.hostname,
+			usock_port(action->data.proxy.port));
 
 		if (cl->upstream.ufd.fd == -1) {
 			uwsd_http_error_send(cl, 502, "Bad Gateway",
@@ -1244,8 +1305,7 @@ uwsd_http_state_accept(uwsd_client_context_t *cl, uwsd_connection_state_t state,
 __hidden void
 uwsd_http_state_request_header(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
-	uwsd_endpoint_t *ep;
-	uwsd_backend_t *be;
+	uwsd_action_t *old_action;
 	bool ws;
 
 	if (!http_request_recv(cl))
@@ -1258,26 +1318,23 @@ uwsd_http_state_request_header(uwsd_client_context_t *cl, uwsd_connection_state_
 	}
 
 	ws = http_is_websocket_handshake(cl);
-	ep = uwsd_endpoint_lookup(cl->srv, ws, cl->request_uri);
+	cl->protocol = ws ? UWSD_PROTOCOL_WS : UWSD_PROTOCOL_HTTP;
 
-	if (ep) {
-		be = uwsd_endpoint_backend_get(ep);
+	old_action = cl->action;
 
+	resolve_action(cl);
+
+	if (cl->action) {
 		/* If endpoint changed since last request, make sure to close
 		 * associated descriptor */
-		if (ep != cl->endpoint) {
+		if (old_action != cl->action)  {
 			if (cl->upstream.ufd.fd != -1) {
 				close(cl->upstream.ufd.fd);
 				cl->upstream.ufd.fd = -1;
 			}
-
-			cl->endpoint = ep;
 		}
 
-		if (!auth_check_mtls(cl))
-			return;
-
-		if (!auth_check_basic(cl))
+		if (!auth_check(cl))
 			return;
 
 		if (ws) {
@@ -1285,15 +1342,16 @@ uwsd_http_state_request_header(uwsd_client_context_t *cl, uwsd_connection_state_
 				return;
 		}
 		else {
-			if (be->type == UWSD_BACKEND_TCP) {
+			if (cl->action->type == UWSD_ACTION_TCP_PROXY) {
 				if (!http_proxy_connect(cl))
 					return;
 			}
-			else if (be->type == UWSD_BACKEND_FILE) {
+			else if (cl->action->type == UWSD_ACTION_FILE ||
+			         cl->action->type == UWSD_ACTION_DIRECTORY) {
 				if (!http_file_serve(cl))
 					return;
 			}
-			else if (be->type == UWSD_BACKEND_SCRIPT) {
+			else if (cl->action->type == UWSD_ACTION_SCRIPT) {
 				if (!http_script_invoke(cl))
 					return;
 			}
@@ -1462,7 +1520,7 @@ uwsd_http_state_upstream_connected(uwsd_client_context_t *cl, uwsd_connection_st
 
 	/* we use a oneway pipe towards the script and won't ever get write readyness,
 	 * so directly transition to upstream send callback */
-	if (uwsd_endpoint_backend_get(cl->endpoint)->type == UWSD_BACKEND_SCRIPT)
+	if (cl->action->type == UWSD_ACTION_SCRIPT)
 		return uwsd_http_state_upstream_send(cl, STATE_CONN_UPSTREAM_SEND, true);
 
 	uwsd_state_transition(cl, STATE_CONN_UPSTREAM_SEND);
@@ -1473,7 +1531,7 @@ uwsd_http_state_upstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t
 {
 	ssize_t wlen;
 
-	if (uwsd_endpoint_backend_get(cl->endpoint)->type != UWSD_BACKEND_SCRIPT) {
+	if (cl->action->type != UWSD_ACTION_SCRIPT) {
 		wlen = client_send(&cl->upstream, cl->rxbuf.sent, cl->rxbuf.pos - cl->rxbuf.sent);
 
 		if (wlen == -1) {

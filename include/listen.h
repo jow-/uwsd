@@ -26,76 +26,79 @@
 #include <libubox/uloop.h>
 
 #include "util.h"
+#include "ssl.h"
+
 
 typedef enum {
-	UWSD_LISTEN_WS,
-	UWSD_LISTEN_WSS,
-	UWSD_LISTEN_HTTP,
-	UWSD_LISTEN_HTTPS,
-} uwsd_listen_type_t;
+	UWSD_PROTOCOL_HTTP,
+	UWSD_PROTOCOL_WS,
+} uwsd_protocol_t;
 
 typedef enum {
-	UWSD_BACKEND_SCRIPT,
-	UWSD_BACKEND_FILE,
-	UWSD_BACKEND_UNIX,
-	UWSD_BACKEND_TCP,
-	UWSD_BACKEND_UDP,
-} uwsd_backend_type_t;
+	UWSD_ACTION_FILE,
+	UWSD_ACTION_DIRECTORY,
+	UWSD_ACTION_SCRIPT,
+	UWSD_ACTION_TCP_PROXY,
+	UWSD_ACTION_UDP_PROXY,
+	UWSD_ACTION_UNIX_PROXY,
+} uwsd_action_type_t;
 
-typedef struct uwsd_backend {
-	struct list_head list;
-	uwsd_backend_type_t type;
-	char *addr, *port, *wsproto;
-	bool binary;
-	struct {
-		uc_vm_t vm;
-		uc_value_t *onConnect, *onData, *onClose;
-		uc_value_t *onRequest, *onBody;
-	} script;
-	int idle_timeout, connect_timeout;
-} uwsd_backend_t;
+typedef struct {
+	uwsd_action_type_t type;
+	union {
+		char *file;
+		char *directory;
+		struct {
+			uc_vm_t vm;
+			uc_value_t *onConnect, *onData, *onClose;
+			uc_value_t *onRequest, *onBody;
+		} script;
+		struct {
+			int connect_timeout, transfer_timeout, idle_timeout;
+			char *hostname;
+			uint16_t port;
+			bool binary;
+		} proxy;
+	} data;
+} uwsd_action_t;
+
+typedef enum {
+	UWSD_MATCH_PROTOCOL,
+	UWSD_MATCH_HOSTNAME,
+	UWSD_MATCH_PATH,
+} uwsd_match_type_t;
 
 typedef struct {
 	struct list_head list;
-	struct uloop_fd ufd;
-	char *addr, *port;
-} uwsd_socket_t;
+	struct list_head matches;
+	struct list_head auth;
+	uwsd_match_type_t type;
+	uwsd_action_t *default_action;
+	union {
+		uwsd_protocol_t protocol;
+		char *value;
+	} data;
+} uwsd_match_t;
 
 typedef struct {
 	struct list_head list;
-	uwsd_listen_type_t type;
-	char *prefix;
 	union {
 		struct sockaddr unspec;
-		struct sockaddr_in in;
-		struct sockaddr_in6 in6;
+		struct sockaddr_in inet;
+		struct sockaddr_in6 inet6;
 	} addr;
-	uwsd_socket_t *socket;
-	struct list_head upstream;
+	char *hostname;
+	uint16_t port;
+	struct uloop_fd ufd;
+	struct list_head matches;
 	struct list_head auth;
-} uwsd_endpoint_t;
+	int request_timeout, transfer_timeout, idle_timeout;
+	uwsd_action_t *default_action;
+	uwsd_ssl_t *ssl;
+} uwsd_listen_t;
 
-typedef struct {
-	struct list_head list;
-	uwsd_listen_type_t type;
-	uwsd_socket_t *socket;
-	uwsd_backend_t *backend;
-	char *id, *prefix;
-} uwsd_frontend_t;
 
-__hidden uwsd_endpoint_t *uwsd_endpoint_lookup(struct uloop_fd *, bool, const char *);
-
-__hidden bool uwsd_has_ssl_endpoints(void);
-
-__hidden bool uwsd_endpoint_url_parse(uwsd_endpoint_t *, const char *);
-__hidden bool uwsd_backend_url_parse(uwsd_backend_t *, const char *);
-
-static inline uwsd_backend_t *
-uwsd_endpoint_backend_get(uwsd_endpoint_t *ep) {
-	if (!ep || list_empty(&ep->upstream))
-		return NULL;
-
-	return list_first_entry(&ep->upstream, uwsd_backend_t, list);
-}
+__hidden bool uwsd_listen_init(uwsd_listen_t *, const char *, uint16_t);
+__hidden void uwsd_listen_free(uwsd_listen_t *);
 
 #endif /* UWSD_LISTEN_H */

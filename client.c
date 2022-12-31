@@ -31,15 +31,16 @@
 #include "ws.h"
 #include "ssl.h"
 #include "log.h"
+#include "script.h"
 
 static LIST_HEAD(clients);
 
 __hidden void
-client_create(int fd, struct uloop_fd *srv, struct sockaddr *peeraddr, size_t alen, bool ssl)
+client_create2(int fd, uwsd_listen_t *listen, struct sockaddr *peeraddr, size_t alen)
 {
 	uwsd_client_context_t *cl = alloc_obj(uwsd_client_context_t);
 
-	cl->srv = srv;
+	cl->listener = listen;
 
 	cl->rxbuf.pos = cl->rxbuf.data;
 	cl->rxbuf.end = cl->rxbuf.pos;
@@ -61,7 +62,7 @@ client_create(int fd, struct uloop_fd *srv, struct sockaddr *peeraddr, size_t al
 
 	uwsd_log_debug(cl, "connected");
 
-	if (ssl && !uwsd_ssl_init(cl))
+	if (listen->ssl && !uwsd_ssl_init(cl))
 		return;
 
 	uwsd_state_init(cl, STATE_CONN_ACCEPT);
@@ -130,7 +131,7 @@ client_free_all(void)
 	uwsd_client_context_t *cl, *tmp;
 
 	list_for_each_entry_safe(cl, tmp, &clients, list) {
-		if (cl->endpoint->type == UWSD_LISTEN_WS || cl->endpoint->type == UWSD_LISTEN_WSS) {
+		if (cl->protocol == UWSD_PROTOCOL_WS) {
 			uwsd_ws_connection_close(cl,
 				cl->ws.error.code ? cl->ws.error.code : STATUS_GOING_AWAY,
 				cl->ws.error.msg ? cl->ws.error.msg : "Server shutting down");

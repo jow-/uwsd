@@ -29,15 +29,9 @@
 #include "util.h"
 #include "http.h"
 #include "ws.h"
-#include "script.h"
 
-#define DOWNSTREAM_HEAD_TIMEOUT_MS 1000
-#define DOWNSTREAM_XFER_TIMEOUT_MS 10000
 
-#define UPSTREAM_CONNECT_TIMEOUT_MS 10000
-#define UPSTREAM_XFER_TIMEOUT_MS 10000
-
-typedef struct {
+typedef struct uwsd_connection {
 	bool upstream;
 	void *ssl;
 	struct uloop_fd ufd;
@@ -46,7 +40,11 @@ typedef struct {
 
 typedef struct uwsd_client_context {
 	struct list_head list;
-	struct uloop_fd *srv;
+	uwsd_listen_t *listener;
+	uwsd_action_t *action;
+	struct list_head *auths;
+	char *prefix;
+	uwsd_protocol_t protocol;
 	union {
 		struct sockaddr unspec;
 		struct sockaddr_in in;
@@ -60,7 +58,6 @@ typedef struct uwsd_client_context {
 		uint8_t data[10 + 8192];
 		uint8_t *pos, *end;
 	} txbuf;
-	uwsd_endpoint_t *endpoint;
 	uwsd_connection_state_t state;
 	uwsd_http_method_t request_method;
 	size_t request_length;
@@ -101,7 +98,7 @@ typedef struct uwsd_client_context {
 	} script;
 } uwsd_client_context_t;
 
-__hidden void client_create(int, struct uloop_fd *, struct sockaddr *, size_t, bool);
+__hidden void client_create2(int, uwsd_listen_t *, struct sockaddr *, size_t);
 __hidden void client_free(uwsd_client_context_t *, const char *, ...);
 __hidden void client_free_all(void);
 

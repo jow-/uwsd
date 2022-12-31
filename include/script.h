@@ -20,14 +20,15 @@
 #include <stdbool.h>
 
 #include "util.h"
+#include "listen.h"
 
 typedef struct uwsd_client_context uwsd_client_context_t;
-typedef struct uwsd_backend uwsd_backend_t;
 
-__hidden bool uwsd_script_init(uwsd_backend_t *);
+__hidden bool uwsd_script_init(uwsd_action_t *, const char *);
 __hidden bool uwsd_script_connect(uwsd_client_context_t *, int);
 __hidden bool uwsd_script_send(uwsd_client_context_t *, const void *, size_t);
 __hidden void uwsd_script_close(uwsd_client_context_t *);
+__hidden void uwsd_script_free(uwsd_action_t *);
 
 __hidden bool uwsd_script_request(uwsd_client_context_t *, int);
 __hidden bool uwsd_script_bodydata(uwsd_client_context_t *, const void *, size_t);

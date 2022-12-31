@@ -19,6 +19,8 @@
 #include <crypt.h>
 #include <fnmatch.h>
 
+#include <libubox/list.h>
+
 #include "auth.h"
 #include "http.h"
 #include "ssl.h"
@@ -63,7 +65,7 @@ auth_check_credentials(uwsd_client_context_t *cl, uwsd_auth_t *auth,
 		return false;
 	}
 
-	if (auth->data.basic.shadow) {
+	if (auth->data.basic.lookup_shadow) {
 		sp = getspnam(username);
 
 		if (!sp) {
@@ -91,48 +93,40 @@ auth_check_credentials(uwsd_client_context_t *cl, uwsd_auth_t *auth,
 	return true;
 }
 
-__hidden bool
-auth_check_basic(uwsd_client_context_t *cl)
+static bool
+check_basic(uwsd_auth_t *auth, uwsd_client_context_t *cl)
 {
-	uwsd_endpoint_t *ep = cl->endpoint;
-	uwsd_auth_t *auth;
-
 	char *hdr, *dec = NULL;
 	size_t len;
 
-	list_for_each_entry(auth, &ep->auth, list) {
-		if (auth->type == UWSD_AUTH_BASIC) {
-			hdr = uwsd_http_header_lookup(cl, "Authorization");
+	hdr = uwsd_http_header_lookup(cl, "Authorization");
 
-			if (!hdr)
-				goto fail;
+	if (!hdr)
+		goto fail;
 
-			dec = hdr + strcspn(hdr, " \t\r\n");
+	dec = hdr + strcspn(hdr, " \t\r\n");
 
-			if (dec == hdr || strspncasecmp(hdr, dec, "Basic"))
-				goto fail;
+	if (dec == hdr || strspncasecmp(hdr, dec, "Basic"))
+		goto fail;
 
-			hdr = dec + strspn(dec, " \t\r\n");
-			len = B64_DECODE_LEN(strlen(hdr));
-			dec = xalloc(len);
+	hdr = dec + strspn(dec, " \t\r\n");
+	len = B64_DECODE_LEN(strlen(hdr));
+	dec = xalloc(len);
 
-			if (b64_decode(hdr, dec, len) == -1)
-				goto fail;
+	if (b64_decode(hdr, dec, len) == -1)
+		goto fail;
 
-			hdr = strchr(dec, ':');
+	hdr = strchr(dec, ':');
 
-			if (!hdr)
-				goto fail;
+	if (!hdr)
+		goto fail;
 
-			*hdr++ = 0;
+	*hdr++ = 0;
 
-			if (!auth_check_credentials(cl, auth, dec, hdr))
-				goto fail;
+	if (!auth_check_credentials(cl, auth, dec, hdr))
+		goto fail;
 
-			free(dec);
-			break;
-		}
-	}
+	free(dec);
 
 	return true;
 
@@ -150,43 +144,32 @@ fail:
 	return false;
 }
 
-__hidden bool
-auth_check_mtls(uwsd_client_context_t *cl)
+static bool
+check_mtls(uwsd_auth_t *auth, uwsd_client_context_t *cl)
 {
-	uwsd_endpoint_t *ep = cl->endpoint;
-	uwsd_auth_t *auth;
 	const char *p;
 
-	if (ep->type != UWSD_LISTEN_WSS && ep->type != UWSD_LISTEN_HTTPS)
-		return true;
+	if (auth->data.mtls.require_subject) {
+		p = uwsd_ssl_peer_subject_name(&cl->downstream);
 
-	list_for_each_entry(auth, &ep->auth, list) {
-		if (auth->type == UWSD_AUTH_MTLS) {
-			if (auth->data.mtls.require_cn) {
-				p = uwsd_ssl_peer_subject_name(&cl->downstream);
+		if (!p || fnmatch(auth->data.mtls.require_subject, p, FNM_NOESCAPE) == FNM_NOMATCH) {
+			uwsd_ssl_warn(cl,
+				"Authentication failure: peer subject CN '%s' not matching '%s'",
+				p, auth->data.mtls.require_subject);
 
-				if (!p || fnmatch(auth->data.mtls.require_cn, p, FNM_NOESCAPE) == FNM_NOMATCH) {
-					uwsd_ssl_warn(cl,
-						"Authentication failure: peer CN '%s' not matching '%s'",
-						p, auth->data.mtls.require_cn);
+			goto fail;
+		}
+	}
 
-					goto fail;
-				}
-			}
+	if (auth->data.mtls.require_issuer) {
+		p = uwsd_ssl_peer_issuer_name(&cl->downstream);
 
-			if (auth->data.mtls.require_ca) {
-				p = uwsd_ssl_peer_issuer_name(&cl->downstream);
+		if (!p || fnmatch(auth->data.mtls.require_issuer, p, FNM_NOESCAPE) == FNM_NOMATCH) {
+			uwsd_ssl_warn(cl,
+				"Authentication failure: peer issuer '%s' not matching '%s'",
+				p, auth->data.mtls.require_issuer);
 
-				if (!p || fnmatch(auth->data.mtls.require_ca, p, FNM_NOESCAPE) == FNM_NOMATCH) {
-					uwsd_ssl_warn(cl,
-						"Authentication failure: peer issuer '%s' not matching '%s'",
-						p, auth->data.mtls.require_ca);
-
-					goto fail;
-				}
-			}
-
-			break;
+			goto fail;
 		}
 	}
 
@@ -198,4 +181,30 @@ fail:
 	uwsd_http_reply_send(cl, true);
 
 	return false;
+}
+
+__hidden bool
+auth_check(uwsd_client_context_t *cl)
+{
+	uwsd_auth_t *auth;
+
+	if (cl->auths) {
+		list_for_each_entry(auth, cl->auths, list) {
+			switch (auth->type) {
+			case UWSD_AUTH_BASIC:
+				if (!check_basic(auth, cl))
+					return false;
+
+				break;
+
+			case UWSD_AUTH_MTLS:
+				if (!check_mtls(auth, cl))
+					return false;
+
+				break;
+			}
+		}
+	}
+
+	return true;
 }

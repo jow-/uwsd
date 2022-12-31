@@ -23,22 +23,14 @@
 #include "ws.h"
 #include "client.h"
 #include "log.h"
-
-#define DOWNSTREAM_IDLE_TIMEOUT_MS 60000
-#define DOWNSTREAM_HEAD_TIMEOUT_MS 1000
-#define DOWNSTREAM_XFER_TIMEOUT_MS 10000
-
-#define UPSTREAM_CONNECT_TIMEOUT_MS 10000
-#define UPSTREAM_XFER_TIMEOUT_MS 10000
-
-#define XSTREAM_IDLE_TIMEOUT_MS 60000
+#include "config.h"
 
 static const uwsd_state_entry_t states[] = {
 	[STATE_CONN_ACCEPT] = {
 		.channels   = CHANNEL_DOWNSTREAM,
 		.events     = EVENT_READABLE,
 		.io_cb      = uwsd_http_state_accept,
-		.timeout    = DOWNSTREAM_HEAD_TIMEOUT_MS,
+		.timeout    = TIMEOUT_DOWNSTREAM_REQUEST,
 		.timeout_cb = uwsd_http_state_request_timeout
 	},
 
@@ -46,7 +38,7 @@ static const uwsd_state_entry_t states[] = {
 		.channels   = CHANNEL_DOWNSTREAM,
 		.events     = EVENT_READABLE,
 		.io_cb      = uwsd_http_state_request_header,
-		.timeout    = DOWNSTREAM_IDLE_TIMEOUT_MS,
+		.timeout    = TIMEOUT_DOWNSTREAM_IDLE,
 		.timeout_cb = uwsd_http_state_idle_timeout
 	},
 
@@ -54,7 +46,7 @@ static const uwsd_state_entry_t states[] = {
 		.channels   = CHANNEL_DOWNSTREAM,
 		.events     = EVENT_READABLE,
 		.io_cb      = uwsd_http_state_request_header,
-		.timeout    = DOWNSTREAM_HEAD_TIMEOUT_MS,
+		.timeout    = TIMEOUT_DOWNSTREAM_REQUEST,
 		.timeout_cb = uwsd_http_state_request_timeout
 	},
 
@@ -62,28 +54,28 @@ static const uwsd_state_entry_t states[] = {
 		.channels   = CHANNEL_DOWNSTREAM,
 		.events     = EVENT_WRITABLE,
 		.io_cb      = uwsd_http_state_response_send,
-		.timeout    = DOWNSTREAM_XFER_TIMEOUT_MS,
+		.timeout    = TIMEOUT_DOWNSTREAM_TRANSFER,
 		.timeout_cb = uwsd_http_state_response_timeout
 	},
 	[STATE_CONN_REPLY_ASYNC] = {
 		.channels   = CHANNEL_DOWNSTREAM,
 		.events     = EVENT_WRITABLE,
 		.io_cb      = uwsd_http_state_response_send,
-		.timeout    = DOWNSTREAM_XFER_TIMEOUT_MS,
+		.timeout    = TIMEOUT_DOWNSTREAM_TRANSFER,
 		.timeout_cb = uwsd_http_state_response_timeout
 	},
 	[STATE_CONN_REPLY_FILECOPY] = {
 		.channels   = CHANNEL_DOWNSTREAM,
 		.events     = EVENT_WRITABLE,
 		.io_cb      = uwsd_http_state_response_send,
-		.timeout    = DOWNSTREAM_XFER_TIMEOUT_MS,
+		.timeout    = TIMEOUT_DOWNSTREAM_TRANSFER,
 		.timeout_cb = uwsd_http_state_response_timeout
 	},
 	[STATE_CONN_REPLY_SENDFILE] = {
 		.channels   = CHANNEL_DOWNSTREAM,
 		.events     = EVENT_WRITABLE,
 		.io_cb      = uwsd_http_state_response_sendfile,
-		.timeout    = DOWNSTREAM_XFER_TIMEOUT_MS,
+		.timeout    = TIMEOUT_DOWNSTREAM_TRANSFER,
 		.timeout_cb = uwsd_http_state_response_timeout
 	},
 
@@ -91,7 +83,7 @@ static const uwsd_state_entry_t states[] = {
 		.channels   = CHANNEL_UPSTREAM,
 		.events     = EVENT_WRITABLE,
 		.io_cb      = uwsd_http_state_upstream_connected,
-		.timeout    = UPSTREAM_CONNECT_TIMEOUT_MS,
+		.timeout    = TIMEOUT_UPSTREAM_CONNECT,
 		.timeout_cb = uwsd_http_state_upstream_timeout
 	},
 
@@ -99,14 +91,14 @@ static const uwsd_state_entry_t states[] = {
 		.channels   = CHANNEL_UPSTREAM,
 		.events     = EVENT_WRITABLE,
 		.io_cb      = uwsd_http_state_upstream_send,
-		.timeout    = UPSTREAM_XFER_TIMEOUT_MS,
+		.timeout    = TIMEOUT_UPSTREAM_TRANSFER,
 		.timeout_cb = uwsd_http_state_upstream_timeout
 	},
 	[STATE_CONN_UPSTREAM_RECV] = {
 		.channels   = CHANNEL_UPSTREAM,
 		.events     = EVENT_READABLE,
 		.io_cb      = uwsd_http_state_upstream_recv,
-		.timeout    = UPSTREAM_XFER_TIMEOUT_MS,
+		.timeout    = TIMEOUT_UPSTREAM_TRANSFER,
 		.timeout_cb = uwsd_http_state_upstream_timeout
 	},
 
@@ -114,14 +106,14 @@ static const uwsd_state_entry_t states[] = {
 		.channels   = CHANNEL_DOWNSTREAM,
 		.events     = EVENT_WRITABLE,
 		.io_cb      = uwsd_http_state_downstream_send,
-		.timeout    = UPSTREAM_XFER_TIMEOUT_MS,
+		.timeout    = TIMEOUT_UPSTREAM_TRANSFER,
 		.timeout_cb = uwsd_http_state_downstream_timeout
 	},
 	[STATE_CONN_DOWNSTREAM_RECV] = {
 		.channels   = CHANNEL_DOWNSTREAM,
 		.events     = EVENT_READABLE,
 		.io_cb      = uwsd_http_state_downstream_recv,
-		.timeout    = UPSTREAM_XFER_TIMEOUT_MS,
+		.timeout    = TIMEOUT_UPSTREAM_TRANSFER,
 		.timeout_cb = uwsd_http_state_downstream_timeout
 	},
 
@@ -129,7 +121,7 @@ static const uwsd_state_entry_t states[] = {
 		.channels   = CHANNEL_UPSTREAM|CHANNEL_DOWNSTREAM,
 		.events     = EVENT_READABLE,
 		.io_cb      = uwsd_ws_state_xstream_recv,
-		.timeout    = XSTREAM_IDLE_TIMEOUT_MS,
+		.timeout    = TIMEOUT_XSTREAM_IDLE,
 		.timeout_cb = uwsd_ws_state_xstream_timeout
 	},
 
@@ -137,7 +129,7 @@ static const uwsd_state_entry_t states[] = {
 		.channels   = CHANNEL_UPSTREAM,
 		.events     = EVENT_WRITABLE,
 		.io_cb      = uwsd_ws_state_upstream_connected,
-		.timeout    = UPSTREAM_CONNECT_TIMEOUT_MS,
+		.timeout    = TIMEOUT_UPSTREAM_CONNECT,
 		.timeout_cb = uwsd_ws_state_upstream_timeout
 	},
 
@@ -145,7 +137,7 @@ static const uwsd_state_entry_t states[] = {
 		.channels   = CHANNEL_UPSTREAM,
 		.events     = EVENT_WRITABLE,
 		.io_cb      = uwsd_ws_state_upstream_send,
-		.timeout    = UPSTREAM_XFER_TIMEOUT_MS,
+		.timeout    = TIMEOUT_UPSTREAM_TRANSFER,
 		.timeout_cb = uwsd_ws_state_upstream_timeout
 	},
 
@@ -153,14 +145,14 @@ static const uwsd_state_entry_t states[] = {
 		.channels   = CHANNEL_DOWNSTREAM,
 		.events     = EVENT_WRITABLE,
 		.io_cb      = uwsd_ws_state_downstream_send,
-		.timeout    = UPSTREAM_XFER_TIMEOUT_MS,
+		.timeout    = TIMEOUT_UPSTREAM_TRANSFER,
 		.timeout_cb = uwsd_ws_state_downstream_timeout
 	},
 	[STATE_CONN_WS_DOWNSTREAM_RECV] = {
 		.channels   = CHANNEL_DOWNSTREAM,
 		.events     = EVENT_READABLE,
 		.io_cb      = uwsd_ws_state_downstream_recv,
-		.timeout    = UPSTREAM_XFER_TIMEOUT_MS,
+		.timeout    = TIMEOUT_UPSTREAM_TRANSFER,
 		.timeout_cb = uwsd_ws_state_downstream_timeout
 	}
 };
@@ -211,6 +203,32 @@ downstream_utm_cb(struct uloop_timeout *utm)
 	states[cl->state].timeout_cb(cl, cl->state, false);
 }
 
+static int
+timeout_value(uwsd_client_context_t *cl, uwsd_timeout_kind_t tt)
+{
+	bool proxy = (cl->action && cl->action->type >= UWSD_ACTION_TCP_PROXY);
+
+	switch (tt) {
+	case TIMEOUT_DOWNSTREAM_REQUEST:  return cl->listener->request_timeout;
+	case TIMEOUT_DOWNSTREAM_TRANSFER: return cl->listener->transfer_timeout;
+	case TIMEOUT_DOWNSTREAM_IDLE:     return cl->listener->idle_timeout;
+
+	case TIMEOUT_UPSTREAM_CONNECT:    return proxy ? cl->action->data.proxy.connect_timeout  : -1;
+	case TIMEOUT_UPSTREAM_TRANSFER:   return proxy ? cl->action->data.proxy.transfer_timeout : -1;
+
+	case TIMEOUT_XSTREAM_IDLE:
+		if (proxy && cl->action->data.proxy.idle_timeout < cl->listener->idle_timeout)
+			return cl->action->data.proxy.idle_timeout;
+
+		return cl->listener->idle_timeout;
+
+	default:
+		break;
+	}
+
+	return -1;
+}
+
 __hidden void
 uwsd_state_init(uwsd_client_context_t *cl, uwsd_connection_state_t state)
 {
@@ -230,6 +248,8 @@ uwsd_state_transition(uwsd_client_context_t *cl, uwsd_connection_state_t state)
 		((se->events & EVENT_WRITABLE) ? ULOOP_WRITE : 0) |
 		((se->events & EVENT_READABLE) ? ULOOP_READ : 0);
 
+	int timeout;
+
 	uwsd_log_debug(cl, "IO state %s -> %s [Td: %lldms] [Tu: %lldms]",
 		state_name(cl->state), state_name(state),
 		uloop_timeout_remaining64(&cl->downstream.utm),
@@ -238,11 +258,13 @@ uwsd_state_transition(uwsd_client_context_t *cl, uwsd_connection_state_t state)
 
 	cl->state = state;
 
+	timeout = timeout_value(cl, se->timeout);
+
 	if (se->channels & CHANNEL_UPSTREAM) {
 		uloop_fd_add(&cl->upstream.ufd, events);
 
-		if (se->timeout > -1)
-			uloop_timeout_set(&cl->upstream.utm, se->timeout);
+		if (timeout > -1)
+			uloop_timeout_set(&cl->upstream.utm, timeout);
 		else
 			uloop_timeout_cancel(&cl->upstream.utm);
 	}
@@ -254,8 +276,8 @@ uwsd_state_transition(uwsd_client_context_t *cl, uwsd_connection_state_t state)
 	if (se->channels & CHANNEL_DOWNSTREAM) {
 		uloop_fd_add(&cl->downstream.ufd, events);
 
-		if (se->timeout > -1)
-			uloop_timeout_set(&cl->downstream.utm, se->timeout);
+		if (timeout > -1)
+			uloop_timeout_set(&cl->downstream.utm, timeout);
 		else
 			uloop_timeout_cancel(&cl->downstream.utm);
 	}

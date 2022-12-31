@@ -41,9 +41,6 @@
 
 static bool ssl_initialized = false;
 
-static SSL_CTX **certs = NULL;
-static size_t num_certs = 0;
-
 
 static int
 password_cb(char *buf, int size, int rwflag, void *u)
@@ -60,7 +57,7 @@ ssl_error(void)
 #define ssl_perror(fmt, ...) uwsd_ssl_err(NULL, fmt ": %s", ##__VA_ARGS__, ssl_error())
 
 static SSL_CTX *
-ssl_lookup_context_by_hostname(const char *hostname);
+ssl_lookup_context_by_hostname(uwsd_client_context_t *cl, const char *hostname);
 
 static const char *
 ssl_get_subject_cn(X509_NAME *subj);
@@ -70,10 +67,11 @@ static int
 servername_cb(SSL *ssl, int *al, void *arg)
 {
 	const char *hostname = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
+	uwsd_client_context_t *cl = arg;
 	SSL_CTX *tls_ctx;
 
 	if (hostname) {
-		tls_ctx = ssl_lookup_context_by_hostname(hostname);
+		tls_ctx = ssl_lookup_context_by_hostname(cl, hostname);
 
 #ifndef NDEBUG
 		X509_NAME *n = X509_get_subject_name(SSL_CTX_get0_certificate(tls_ctx));
@@ -184,48 +182,141 @@ ssl_match_context(SSL_CTX *ssl_ctx, const struct sockaddr *sa, const char *hostn
 }
 
 static SSL_CTX *
-ssl_lookup_context_by_hostname(const char *hostname)
+ssl_lookup_context_by_hostname(uwsd_client_context_t *cl, const char *hostname)
 {
+	uwsd_ssl_t *ctx = cl->listener->ssl;
 	size_t i;
 
-	if (num_certs > 1) {
-		for (i = 0; i < num_certs; i++)
-			if (ssl_match_context(certs[i], NULL, hostname))
-				return certs[i];
+	if (ctx->contexts.count > 1) {
+		for (i = 0; i < ctx->contexts.count; i++)
+			if (ssl_match_context(ctx->contexts.entries[i], NULL, hostname))
+				return ctx->contexts.entries[i];
 
 		uwsd_ssl_debug(NULL, "No matching certificate for hostname '%s' - using first one\n", hostname);
 	}
 
-	return certs[0];
+	return ctx->contexts.entries[0];
 }
 
 static SSL_CTX *
-ssl_lookup_context_by_sockaddr(const struct sockaddr *sa)
+ssl_lookup_context_by_sockaddr(uwsd_client_context_t *cl, const struct sockaddr *sa)
 {
+	uwsd_ssl_t *ctx = cl->listener->ssl;
 	size_t i;
 
-	if (num_certs > 1)
-		for (i = 0; i < num_certs; i++)
-			if (ssl_match_context(certs[i], sa, NULL))
-				return certs[i];
+	if (ctx->contexts.count > 1)
+		for (i = 0; i < ctx->contexts.count; i++)
+			if (ssl_match_context(ctx->contexts.entries[i], sa, NULL))
+				return ctx->contexts.entries[i];
 
-	return certs[0];
+	return ctx->contexts.entries[0];
 }
 
-__hidden bool
-uwsd_ssl_load_certificates(const char *directory)
+static bool
+ssl_load_pem_privkey(SSL_CTX *ssl_ctx, FILE *fp, const char *path)
+{
+	EVP_PKEY *pkey = NULL;
+
+	rewind(fp);
+
+	pkey = PEM_read_PrivateKey(fp, NULL, password_cb, NULL);
+
+	if (!pkey) {
+		ssl_perror("Unable to read private key from PEM file '%s'", path);
+
+		return false;
+	}
+
+	if (!SSL_CTX_use_PrivateKey(ssl_ctx, pkey)) {
+		ssl_perror("Unable to use private key from PEM file '%s'", path);
+		EVP_PKEY_free(pkey);
+
+		return false;
+	}
+
+	return true;
+}
+
+static bool
+ssl_load_pem_certificates(SSL_CTX *ssl_ctx, FILE *fp, const char *path)
+{
+	X509 *cert, *other;
+	X509_STORE *store;
+
+	rewind(fp);
+
+	cert = PEM_read_X509_AUX(fp, NULL, password_cb, NULL);
+
+	if (!cert) {
+		ssl_perror("Unable to read certificate from PEM file '%s'", path);
+
+		return false;
+	}
+
+	if (!SSL_CTX_use_certificate(ssl_ctx, cert)) {
+		ssl_perror("Unable to use certificate from PEM file '%s'", path);
+		X509_free(cert);
+
+		return false;
+	}
+
+	store = SSL_CTX_get_cert_store(ssl_ctx);
+
+	while ((other = PEM_read_X509(fp, NULL, password_cb, NULL)) != NULL) {
+		if (SSL_CTX_add0_chain_cert(ssl_ctx, other)) {
+			X509_STORE_add_cert(store, other);
+		}
+		else {
+			ssl_perror("Unable to use additional certificate from PEM file '%s'", path);
+			X509_free(other);
+		}
+	}
+
+	return true;
+}
+
+static bool
+ssl_create_context_from_pem(uwsd_ssl_t *ctx, FILE *pkey_fp, const char *pkey_path,
+                                             FILE *cert_fp, const char *cert_path)
+{
+	SSL_CTX *ssl_ctx = ssl_create_context();
+	X509_NAME *n, *i;
+
+	if (!ssl_ctx)
+		return false;
+
+	if (!ssl_load_pem_privkey(ssl_ctx, pkey_fp, pkey_path) ||
+	    !ssl_load_pem_certificates(ssl_ctx, cert_fp, cert_path)) {
+
+		SSL_CTX_free(ssl_ctx);
+
+		return false;
+	}
+
+	n = X509_get_subject_name(SSL_CTX_get0_certificate(ssl_ctx));
+	i = X509_get_issuer_name(SSL_CTX_get0_certificate(ssl_ctx));
+
+	uwsd_ssl_info(NULL, "loading certificate '%s' by '%s' from '%s'",
+		n ? ssl_get_subject_cn(n) : NULL,
+		i ? ssl_get_subject_cn(i) : NULL,
+		cert_path);
+
+	ctx->contexts.entries = xrealloc(ctx->contexts.entries,
+		sizeof(*ctx->contexts.entries) * (ctx->contexts.count + 1));
+
+	ctx->contexts.entries[ctx->contexts.count++] = ssl_ctx;
+
+	return true;
+}
+
+static bool
+ssl_load_certificates(uwsd_ssl_t *ctx, const char *directory)
 {
 	char path[PATH_MAX];
 	struct dirent *e;
 	struct stat s;
 	FILE *fp;
 	DIR *dp;
-
-	X509 *cert = NULL, *other;
-	X509_STORE *store = NULL;
-	SSL_CTX *ssl_ctx = NULL;
-	EVP_PKEY *pkey = NULL;
-	X509_NAME *n, *i;
 
 	if (!ssl_initialized) {
 		SSL_load_error_strings();
@@ -243,8 +334,6 @@ uwsd_ssl_load_certificates(const char *directory)
 	}
 
 	while ((e = readdir(dp)) != NULL) {
-		ssl_ctx = NULL;
-
 		snprintf(path, sizeof(path), "%s/%s", directory, e->d_name);
 
 		if (stat(path, &s)) {
@@ -262,100 +351,86 @@ uwsd_ssl_load_certificates(const char *directory)
 			continue;
 		}
 
-		pkey = PEM_read_PrivateKey(fp, NULL, password_cb, NULL);
-
-		if (!pkey) {
-			ssl_perror("Unable to read private key from PEM file '%s'", path);
-			goto skip;
-		}
-
-		rewind(fp);
-
-		cert = PEM_read_X509_AUX(fp, NULL, password_cb, NULL);
-
-		if (!cert) {
-			ssl_perror("Unable to read certificate from PEM file '%s'", path);
-			goto skip;
-		}
-
-		ssl_ctx = ssl_create_context();
-
-		if (!ssl_ctx)
-			goto skip;
-
-		if (!SSL_CTX_use_certificate(ssl_ctx, cert)) {
-			ssl_perror("Unable to use certificate from PEM file '%s'", path);
-			goto skip;
-		}
-
-		if (!SSL_CTX_use_PrivateKey(ssl_ctx, pkey)) {
-			ssl_perror("Unable to use private key from PEM file '%s'", path);
-			goto skip;
-		}
-
-		store = SSL_CTX_get_cert_store(ssl_ctx);
-
-		while ((other = PEM_read_X509(fp, NULL, password_cb, NULL)) != NULL) {
-			if (SSL_CTX_add0_chain_cert(ssl_ctx, other)) {
-				X509_STORE_add_cert(store, other);
-			}
-			else {
-				ssl_perror("Unable to use additional certificate from PEM file '%s'", path);
-				X509_free(other);
-			}
-		}
-
-		fclose(fp);
-
-		n = X509_get_subject_name(SSL_CTX_get0_certificate(ssl_ctx));
-		i = X509_get_issuer_name(SSL_CTX_get0_certificate(ssl_ctx));
-
-		uwsd_ssl_info(NULL, "loading certificate '%s' by '%s' from '%s'",
-			n ? ssl_get_subject_cn(n) : NULL,
-			i ? ssl_get_subject_cn(i) : NULL,
-			path);
-
-		certs = xrealloc(certs, sizeof(*certs) * (num_certs + 1));
-		certs[num_certs++] = ssl_ctx;
-
-		continue;
-
-skip:
-		SSL_CTX_free(ssl_ctx);
-		EVP_PKEY_free(pkey);
-		X509_free(cert);
+		ssl_create_context_from_pem(ctx, fp, path, fp, path);
 
 		fclose(fp);
 	}
 
 	closedir(dp);
 
-	return (num_certs > 0);
+	return (ctx->contexts.count > 0);
 }
 
-static uwsd_auth_t *
-ssl_require_mtls(uwsd_client_context_t *cl)
+__hidden bool
+uwsd_ssl_ctx_init(uwsd_ssl_t *ctx)
 {
-	uwsd_endpoint_t *ep;
-	uwsd_auth_t *auth;
+	FILE *pkey_fp, *cert_fp;
 
-	list_for_each_entry(ep, &config->endpoints, list)
-		if (&ep->socket->ufd == cl->srv)
-			list_for_each_entry(auth, &ep->auth, list)
-				if (auth->type == UWSD_AUTH_MTLS)
-					return auth;
+	if (!ssl_initialized) {
+		SSL_load_error_strings();
+		SSL_library_init();
 
-	return NULL;
+		ssl_initialized = true;
+	}
+
+	if (ctx->certificate_directory)
+		ssl_load_certificates(ctx, ctx->certificate_directory);
+
+	if (!!ctx->private_key ^ !!ctx->certificate) {
+		uwsd_ssl_err(NULL, "Require both 'private-key' and 'certificate' properties");
+
+		return false;
+	}
+
+	if (ctx->private_key && ctx->certificate) {
+		pkey_fp = fopen(ctx->private_key, "r");
+
+		if (!pkey_fp) {
+			uwsd_ssl_err(NULL, "Unable to open private key file '%s': %m", ctx->private_key);
+
+			return false;
+		}
+
+		cert_fp = fopen(ctx->certificate, "r");
+
+		if (!cert_fp) {
+			uwsd_ssl_err(NULL, "Unable to open certificate file '%s': %m", ctx->certificate);
+			fclose(pkey_fp);
+
+			return false;
+		}
+
+		ssl_create_context_from_pem(ctx, pkey_fp, ctx->private_key, cert_fp, ctx->certificate);
+
+		fclose(pkey_fp);
+		fclose(cert_fp);
+	}
+
+	if (!ctx->contexts.count) {
+		uwsd_ssl_err(NULL, "No certificates loaded, unable to continue");
+
+		return false;
+	}
+
+	return true;
+}
+
+__hidden void
+uwsd_ssl_ctx_free(uwsd_ssl_t *ctx)
+{
+	while (ctx->contexts.count > 0)
+		SSL_CTX_free(ctx->contexts.entries[--ctx->contexts.count]);
+
+	free(ctx->contexts.entries);
 }
 
 __hidden bool
 uwsd_ssl_init(uwsd_client_context_t *cl)
 {
-	uwsd_auth_t *auth;
 	SSL_CTX *tls_ctx;
 	SSL *ssl = NULL;
 
-	tls_ctx = ssl_lookup_context_by_sockaddr(&cl->sa.unspec);
+	tls_ctx = ssl_lookup_context_by_sockaddr(cl, &cl->sa.unspec);
 
 #ifndef NDEBUG
 	X509_NAME *n = X509_get_subject_name(SSL_CTX_get0_certificate(tls_ctx));
@@ -378,9 +453,7 @@ uwsd_ssl_init(uwsd_client_context_t *cl)
 
 	SSL_set_fd(ssl, cl->downstream.ufd.fd);
 
-	auth = ssl_require_mtls(cl);
-
-	if (auth) {
+	if (cl->listener->ssl->verify_peer) {
 		uwsd_ssl_debug(cl, "peer verification required");
 
 		SSL_set_verify(ssl,

@@ -94,8 +94,8 @@ main(int argc, char **argv)
 	if (!config && !uwsd_config_parse("/etc/uwsd/uwsd.conf"))
 		exit(1);
 
-	if (list_empty(&config->endpoints))
-		fatal("No endpoints defined in configuration, aborting");
+	if (list_empty(&config->listeners))
+		fatal("No listener defined in configuration, aborting");
 
 	if (channels)
 		uwsd_logging_channels = channels;

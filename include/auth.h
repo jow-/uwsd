@@ -20,8 +20,9 @@
 #include <stdbool.h>
 
 #include "util.h"
-#include "client.h"
 
+
+typedef struct uwsd_client_context uwsd_client_context_t;
 
 typedef enum {
 	UWSD_AUTH_BASIC,
@@ -33,22 +34,19 @@ typedef struct {
 	uwsd_auth_type_t type;
 	union {
 		struct {
-			const char *realm;
-			const char *username;
-			const char *password;
-			bool shadow;
+			char *realm;
+			char *username;
+			char *password;
+			bool lookup_shadow;
 		} basic;
 		struct {
-			const char *require_cn;
-			const char *require_ca;
+			char *require_issuer;
+			char *require_subject;
 		} mtls;
 	} data;
 } uwsd_auth_t;
 
 
-typedef struct uwsd_client_context uwsd_client_context_t;
-
-__hidden bool auth_check_mtls(uwsd_client_context_t *);
-__hidden bool auth_check_basic(uwsd_client_context_t *);
+__hidden bool auth_check(uwsd_client_context_t *);
 
 #endif /* UWSD_AUTH_H */

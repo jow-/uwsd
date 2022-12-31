@@ -31,6 +31,7 @@
 #include "state.h"
 #include "script.h"
 #include "log.h"
+#include "config.h"
 
 #include "teeny-sha1.h"
 
@@ -418,8 +419,8 @@ __hidden bool
 uwsd_ws_connection_accept(uwsd_client_context_t *cl)
 {
 	const char *magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+	uwsd_action_t *action = cl->action;
 	int socktype = -1, waker[2];
-	uwsd_backend_t *be;
 	size_t len;
 	char *key;
 
@@ -456,29 +457,29 @@ uwsd_ws_connection_accept(uwsd_client_context_t *cl)
 	/* calculate binary digest and store it after input string in buffer */
 	sha1digest(cl->rxbuf.data, NULL, cl->rxbuf.data + 20, len);
 
-	be = uwsd_endpoint_backend_get(cl->endpoint);
-
-	if (be->type == UWSD_BACKEND_TCP) {
+	if (action->type == UWSD_ACTION_TCP_PROXY) {
 		socktype = USOCK_TCP|USOCK_NONBLOCK;
 
-		uwsd_ws_debug(cl, "connecting to upstream TCP server %s:%s",
-			be->addr, be->port);
+		uwsd_ws_debug(cl, "connecting to upstream TCP server %s:%hu",
+			action->data.proxy.hostname, action->data.proxy.port);
 	}
-	else if (be->type == UWSD_BACKEND_UDP) {
+	else if (action->type == UWSD_ACTION_UDP_PROXY) {
 		socktype = USOCK_UDP|USOCK_NONBLOCK;
 
-		uwsd_ws_debug(cl, "connecting to upstream UDP server %s:%s",
-			be->addr, be->port);
+		uwsd_ws_debug(cl, "connecting to upstream UDP server %s:%hu",
+			action->data.proxy.hostname, action->data.proxy.port);
 	}
-	else if (be->type == UWSD_BACKEND_UNIX) {
+	else if (action->type == UWSD_ACTION_UNIX_PROXY) {
 		uwsd_ws_debug(cl, "connecting to UNIX domain socket %s",
-			be->addr);
+			action->data.proxy.hostname);
 
 		socktype = USOCK_UNIX|USOCK_NONBLOCK;
 	}
 
 	if (socktype != -1) {
-		cl->upstream.ufd.fd = usock(socktype, be->addr, be->port);
+		cl->upstream.ufd.fd = usock(socktype,
+			action->data.proxy.hostname,
+			usock_port(action->data.proxy.port));
 
 		if (cl->upstream.ufd.fd == -1) {
 			uwsd_http_error_send(cl, 502, "Bad Gateway",
@@ -551,7 +552,7 @@ ws_handle_frame_payload(uwsd_client_context_t *cl, void *data, size_t len)
 
 	/* for other frames, forward payload upstream */
 	default:
-		if (uwsd_endpoint_backend_get(cl->endpoint)->type == UWSD_BACKEND_SCRIPT) {
+		if (cl->action->type == UWSD_ACTION_SCRIPT) {
 			if (!uwsd_script_send(cl, cl->rxbuf.sent, cl->rxbuf.pos - cl->rxbuf.sent))
 				return false;
 		}
@@ -651,7 +652,7 @@ uwsd_ws_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t s
 	char c;
 
 	// XXX: waker pipe
-	if (uwsd_endpoint_backend_get(cl->endpoint)->type == UWSD_BACKEND_SCRIPT) {
+	if (cl->action->type == UWSD_ACTION_SCRIPT) {
 		while (true) {
 			rlen = client_recv(&cl->upstream, &c, 1);
 
@@ -695,7 +696,7 @@ uwsd_ws_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t s
 	cl->txbuf.end = cl->txbuf.pos + rlen;
 
 	ws_downstream_tx(cl,
-		uwsd_endpoint_backend_get(cl->endpoint)->binary ? OPCODE_BINARY : OPCODE_TEXT,
+		cl->action->data.proxy.binary ? OPCODE_BINARY : OPCODE_TEXT,
 		true,
 		cl->txbuf.pos, rlen);
 }
@@ -753,7 +754,7 @@ uwsd_ws_state_downstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 
 	/* For script backends, invoke upstream send callback directly as we'll
 	 * have no epoll-capable fd to notify us */
-	if (uwsd_endpoint_backend_get(cl->endpoint)->type == UWSD_BACKEND_SCRIPT)
+	if (cl->action->type == UWSD_ACTION_SCRIPT)
 		return uwsd_ws_state_upstream_send(cl, STATE_CONN_WS_UPSTREAM_SEND, true);
 
 	uwsd_state_transition(cl, STATE_CONN_WS_UPSTREAM_SEND);

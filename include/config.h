@@ -19,15 +19,21 @@
 
 #include <stdbool.h>
 
+#include <sys/un.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+
+#include <ucode/vm.h>
 #include <libubox/list.h>
+#include <libubox/uloop.h>
 
 #include "util.h"
 
+
 typedef struct {
 	char *certificate_directory;
-	struct list_head endpoints;
+	struct list_head listeners;
 } uwsd_config_t;
-
 
 extern uwsd_config_t *config;
 

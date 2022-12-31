@@ -26,6 +26,7 @@
 #include "listen.h"
 #include "ssl.h"
 #include "auth.h"
+#include "script.h"
 #include "log.h"
 
 
@@ -35,7 +36,8 @@ typedef enum {
 	STRING,
 	BOOLEAN,
 	INTEGER,
-	BLOCK,
+	NESTED_SINGLE,
+	NESTED_MULTIPLE,
 } config_type_t;
 
 typedef struct config_block config_block_t;
@@ -55,65 +57,13 @@ typedef struct config_block {
 	size_t size;
 	bool (*init)(void *, const char *);
 	bool (*validate)(void *);
+	void (*free)(void *);
 	struct config_prop properties[];
 } config_block_t;
 
 
 
 #define parse_error(fmt, ...) (uwsd_log_err(NULL, fmt, ##__VA_ARGS__), false)
-
-static bool
-add_certdir(const config_prop_t *spec, void *base, const char *dir)
-{
-	return uwsd_ssl_load_certificates(dir);
-}
-
-static bool
-parse_endpoint(void *obj, const char *url)
-{
-	uwsd_endpoint_t *ep = obj;
-
-	return uwsd_endpoint_url_parse(ep, url);
-}
-
-static bool
-validate_endpoint(void *obj)
-{
-	uwsd_endpoint_t *ep = obj;
-	uwsd_backend_t *be = uwsd_endpoint_backend_get(ep);
-
-	if (!be)
-		return parse_error("Endpoint has no upstream defined");
-
-	if (!list_is_last(ep->upstream.next, &ep->upstream))
-		return parse_error("Endpoint has multiple upstreams defined");
-
-	switch (ep->type) {
-	case UWSD_LISTEN_WS:
-	case UWSD_LISTEN_WSS:
-		if (be->type == UWSD_BACKEND_FILE)
-			return parse_error("WebSocket endpoints require a script, unix, tcp or udp backend");
-
-		break;
-
-	case UWSD_LISTEN_HTTP:
-	case UWSD_LISTEN_HTTPS:
-		if (be->type == UWSD_BACKEND_UDP || be->type == UWSD_BACKEND_UNIX)
-			return parse_error("HTTP endpoints require a script, file or tcp backend");
-
-		break;
-	}
-
-	return true;
-}
-
-static bool
-parse_upstream(void *obj, const char *url)
-{
-	uwsd_backend_t *be = obj;
-
-	return uwsd_backend_url_parse(be, url);
-}
 
 static void *
 property_ptr(const config_prop_t *prop, void *base)
@@ -127,66 +77,246 @@ property_ptr(const config_prop_t *prop, void *base)
 #define list_ptr(prop, base) (struct list_head *)property_ptr(prop, base)
 
 
-static bool parse_basic_auth(void *obj, const char *label);
-static bool validate_basic_auth(void *obj);
+static bool parse_listen(void *obj, const char *label);
+static bool validate_listen(void *obj);
+static void free_listen(void *obj);
 
-static bool parse_mtls_auth(void *obj, const char *label);
+static bool parse_protocol_match(void *obj, const char *label);
+static bool parse_hostname_match(void *obj, const char *label);
+static bool parse_path_match(void *obj, const char *label);
+static void free_match(void *obj);
 
+static bool parse_serve_file(void *obj, const char *label);
+static bool parse_serve_directory(void *obj, const char *label);
+static bool parse_run_script(void *obj, const char *label);
+static bool parse_proxy_tcp(void *obj, const char *label);
+static bool parse_proxy_udp(void *obj, const char *label);
+static bool parse_proxy_unix(void *obj, const char *label);
+static bool validate_action(void *obj);
+static void free_action(void *obj);
 
-static const config_block_t upstream_spec = {
-	.size = sizeof(uwsd_backend_t),
-	.init = parse_upstream,
+static bool parse_auth_basic(void *obj, const char *label);
+static bool parse_auth_mtls(void *obj, const char *label);
+static bool validate_auth(void *obj);
+static void free_auth(void *obj);
+
+static bool validate_ssl(void *obj);
+static void free_ssl(void *obj);
+
+static const config_block_t ssl_spec = {
+	.size = sizeof(uwsd_ssl_t),
+	.validate = validate_ssl,
+	.free = free_ssl,
 	.properties = {
-		{ "binary", BOOLEAN,
-			offsetof(uwsd_backend_t, binary), NULL, NULL },
-		{ "idle-timeout", INTEGER,
-			offsetof(uwsd_backend_t, idle_timeout), NULL, NULL },
-		{ "connect-timeout", INTEGER,
-			offsetof(uwsd_backend_t, connect_timeout), NULL, NULL },
+		{ "verify-peer", BOOLEAN,
+			offsetof(uwsd_ssl_t, verify_peer), NULL, NULL },
+		{ "private-key", STRING,
+			offsetof(uwsd_ssl_t, private_key), NULL, NULL },
+		{ "certificate", STRING,
+			offsetof(uwsd_ssl_t, certificate), NULL, NULL },
+		{ "certificate-directory", STRING,
+			offsetof(uwsd_ssl_t, certificate_directory), NULL, NULL },
 		{ 0 }
 	}
 };
 
-static const config_block_t basic_auth_spec = {
-	.size = sizeof(uwsd_auth_t),
-	.init = parse_basic_auth,
-	.validate = validate_basic_auth,
+#define ACTION_PROPERTIES(type)											\
+	{ "match-protocol", NESTED_MULTIPLE,								\
+		offsetof(type, matches), &match_protocol_spec, NULL },			\
+	{ "match-hostname", NESTED_MULTIPLE,								\
+		offsetof(type, matches), &match_hostname_spec, NULL },			\
+	{ "match-path", NESTED_MULTIPLE,									\
+		offsetof(type, matches), &match_path_spec, NULL },				\
+	{ "serve-file", NESTED_SINGLE,										\
+		offsetof(type, default_action), &serve_file_spec, NULL },		\
+	{ "serve-directory", NESTED_SINGLE,									\
+		offsetof(type, default_action), &serve_directory_spec, NULL },	\
+	{ "run-script", NESTED_SINGLE,										\
+		offsetof(type, default_action), &run_script_spec, NULL },		\
+	{ "proxy-tcp", NESTED_SINGLE,										\
+		offsetof(type, default_action), &proxy_tcp_spec, NULL },		\
+	{ "proxy-udp", NESTED_SINGLE,										\
+		offsetof(type, default_action), &proxy_udp_spec, NULL },		\
+	{ "proxy-unix", NESTED_SINGLE,										\
+		offsetof(type, default_action), &proxy_unix_spec, NULL },		\
+	{ "auth-basic", NESTED_MULTIPLE,									\
+		offsetof(type, auth), &auth_basic_spec, NULL },					\
+	{ "auth-mtls", NESTED_MULTIPLE,										\
+		offsetof(type, auth), &auth_mtls_spec, NULL }
+
+static const config_block_t match_protocol_spec;
+static const config_block_t match_hostname_spec;
+static const config_block_t match_path_spec;
+
+static const config_block_t serve_file_spec;
+static const config_block_t serve_directory_spec;
+static const config_block_t run_script_spec;
+static const config_block_t proxy_tcp_spec;
+static const config_block_t proxy_udp_spec;
+static const config_block_t proxy_unix_spec;
+
+static const config_block_t auth_basic_spec;
+static const config_block_t auth_mtls_spec;
+
+static const config_block_t match_protocol_spec = {
+	.size = sizeof(uwsd_match_t),
+	.init = parse_protocol_match,
+	.free = free_match,
 	.properties = {
-		{ "realm", STRING,
-			offsetof(uwsd_auth_t, data.basic.realm), NULL, NULL },
+		ACTION_PROPERTIES(uwsd_match_t),
+		{ 0 }
+	}
+};
+
+static const config_block_t match_hostname_spec = {
+	.size = sizeof(uwsd_match_t),
+	.init = parse_hostname_match,
+	.free = free_match,
+	.properties = {
+		ACTION_PROPERTIES(uwsd_match_t),
+		{ 0 }
+	}
+};
+
+static const config_block_t match_path_spec = {
+	.size = sizeof(uwsd_match_t),
+	.init = parse_path_match,
+	.free = free_match,
+	.properties = {
+		ACTION_PROPERTIES(uwsd_match_t),
+		{ 0 }
+	}
+};
+
+static const config_block_t serve_file_spec = {
+	.size = sizeof(uwsd_action_t),
+	.init = parse_serve_file,
+	.validate = validate_action,
+	.free = free_action,
+	.properties = {
+		{ 0 }
+	}
+};
+
+static const config_block_t serve_directory_spec = {
+	.size = sizeof(uwsd_action_t),
+	.init = parse_serve_directory,
+	.validate = validate_action,
+	.free = free_action,
+	.properties = {
+		{ 0 }
+	}
+};
+
+static const config_block_t run_script_spec = {
+	.size = sizeof(uwsd_action_t),
+	.init = parse_run_script,
+	.validate = validate_action,
+	.free = free_action,
+	.properties = {
+		{ 0 }
+	}
+};
+
+static const config_block_t proxy_tcp_spec = {
+	.size = sizeof(uwsd_action_t),
+	.init = parse_proxy_tcp,
+	.validate = validate_action,
+	.free = free_action,
+	.properties = {
+		{ "connect-timeout", INTEGER,
+			offsetof(uwsd_action_t, data.proxy.connect_timeout), NULL, NULL },
+		{ "transfer-timeout", INTEGER,
+			offsetof(uwsd_action_t, data.proxy.transfer_timeout), NULL, NULL },
+		{ "idle-timeout", INTEGER,
+			offsetof(uwsd_action_t, data.proxy.idle_timeout), NULL, NULL },
+		{ "binary", BOOLEAN,
+			offsetof(uwsd_action_t, data.proxy.binary), NULL, NULL },
+		{ 0 }
+	}
+};
+
+static const config_block_t proxy_udp_spec = {
+	.size = sizeof(uwsd_action_t),
+	.init = parse_proxy_udp,
+	.validate = validate_action,
+	.free = free_action,
+	.properties = {
+		{ "connect-timeout", INTEGER,
+			offsetof(uwsd_action_t, data.proxy.connect_timeout), NULL, NULL },
+		{ "transfer-timeout", INTEGER,
+			offsetof(uwsd_action_t, data.proxy.transfer_timeout), NULL, NULL },
+		{ "idle-timeout", INTEGER,
+			offsetof(uwsd_action_t, data.proxy.idle_timeout), NULL, NULL },
+		{ "binary", BOOLEAN,
+			offsetof(uwsd_action_t, data.proxy.binary), NULL, NULL },
+		{ 0 }
+	}
+};
+
+static const config_block_t proxy_unix_spec = {
+	.size = sizeof(uwsd_action_t),
+	.init = parse_proxy_unix,
+	.validate = validate_action,
+	.free = free_action,
+	.properties = {
+		{ "connect-timeout", INTEGER,
+			offsetof(uwsd_action_t, data.proxy.connect_timeout), NULL, NULL },
+		{ "transfer-timeout", INTEGER,
+			offsetof(uwsd_action_t, data.proxy.transfer_timeout), NULL, NULL },
+		{ "idle-timeout", INTEGER,
+			offsetof(uwsd_action_t, data.proxy.idle_timeout), NULL, NULL },
+		{ "binary", BOOLEAN,
+			offsetof(uwsd_action_t, data.proxy.binary), NULL, NULL },
+		{ 0 }
+	}
+};
+
+static const config_block_t auth_basic_spec = {
+	.size = sizeof(uwsd_auth_t),
+	.init = parse_auth_basic,
+	.validate = validate_auth,
+	.free = free_auth,
+	.properties = {
 		{ "username", STRING,
 			offsetof(uwsd_auth_t, data.basic.username), NULL, NULL },
 		{ "password", STRING,
 			offsetof(uwsd_auth_t, data.basic.password), NULL, NULL },
-		{ "shadow-lookup", BOOLEAN,
-			offsetof(uwsd_auth_t, data.basic.shadow), NULL, NULL },
+		{ "lookup-shadow", BOOLEAN,
+			offsetof(uwsd_auth_t, data.basic.lookup_shadow), NULL, NULL },
 		{ 0 }
 	}
 };
 
-static const config_block_t mtls_auth_spec = {
+static const config_block_t auth_mtls_spec = {
 	.size = sizeof(uwsd_auth_t),
-	.init = parse_mtls_auth,
+	.init = parse_auth_mtls,
+	.validate = validate_auth,
+	.free = free_auth,
 	.properties = {
-		{ "require-cn", STRING,
-			offsetof(uwsd_auth_t, data.mtls.require_cn), NULL, NULL },
-		{ "require-ca", STRING,
-			offsetof(uwsd_auth_t, data.mtls.require_ca), NULL, NULL },
+		{ "require-issuer", STRING,
+			offsetof(uwsd_auth_t, data.mtls.require_issuer), NULL, NULL },
+		{ "require-subject", STRING,
+			offsetof(uwsd_auth_t, data.mtls.require_subject), NULL, NULL },
 		{ 0 }
 	}
 };
 
-static const config_block_t endpoint_spec = {
-	.size = sizeof(uwsd_endpoint_t),
-	.init = parse_endpoint,
-	.validate = validate_endpoint,
+static const config_block_t listen_spec = {
+	.size = sizeof(uwsd_listen_t),
+	.init = parse_listen,
+	.validate = validate_listen,
+	.free = free_listen,
 	.properties = {
-		{ "upstream", BLOCK,
-			offsetof(uwsd_endpoint_t, upstream), &upstream_spec, NULL },
-		{ "auth-basic", BLOCK,
-			offsetof(uwsd_endpoint_t, auth), &basic_auth_spec, NULL },
-		{ "auth-mtls", BLOCK,
-			offsetof(uwsd_endpoint_t, auth), &mtls_auth_spec, NULL },
+		{ "ssl", NESTED_SINGLE,
+			offsetof(uwsd_listen_t, ssl), &ssl_spec, NULL },
+		{ "request-timeout", INTEGER,
+			offsetof(uwsd_listen_t, request_timeout), NULL, NULL },
+		{ "transfer-timeout", INTEGER,
+			offsetof(uwsd_listen_t, transfer_timeout), NULL, NULL },
+		{ "idle-timeout", INTEGER,
+			offsetof(uwsd_listen_t, idle_timeout), NULL, NULL },
+		ACTION_PROPERTIES(uwsd_listen_t),
 		{ 0 }
 	}
 };
@@ -194,10 +324,8 @@ static const config_block_t endpoint_spec = {
 static const config_block_t toplevel_spec = {
 	.size = sizeof(uwsd_config_t),
 	.properties = {
-		{ "certificate-directory", STRING,
-			0, NULL, add_certdir },
-		{ "endpoint", BLOCK,
-			offsetof(uwsd_config_t, endpoints), &endpoint_spec, NULL },
+		{ "listen", NESTED_MULTIPLE,
+			offsetof(uwsd_config_t, listeners), &listen_spec, NULL },
 		{ 0 }
 	}
 };
@@ -256,8 +384,8 @@ config_alloc_object(const config_block_t *spec, const char *label)
 	obj = xalloc(spec->size);
 
 	for (prop = spec->properties; prop->name; prop++)
-		if (prop->type == BLOCK)
-			INIT_LIST_HEAD((struct list_head *)((char *)obj + prop->offset));
+		if (prop->type == NESTED_MULTIPLE)
+			INIT_LIST_HEAD(list_ptr(prop, obj));
 
 	if (spec->init && !spec->init(obj, label)) {
 		config_free_object(spec, obj);
@@ -273,6 +401,7 @@ config_free_object(const config_block_t *spec, void *base)
 {
 	const config_prop_t *prop;
 	struct list_head *e, *tmp;
+	char *obj;
 
 	for (prop = spec->properties; prop->name; prop++) {
 		switch (prop->type) {
@@ -280,15 +409,31 @@ config_free_object(const config_block_t *spec, void *base)
 			free(char_ptr(prop, base));
 			break;
 
-		case BLOCK:
-			list_for_each_safe(e, tmp, list_ptr(prop, base))
+		case NESTED_MULTIPLE:
+			list_for_each_safe(e, tmp, list_ptr(prop, base)) {
+				list_del(e);
 				config_free_object(prop->nested, e);
+			}
+
+			break;
+
+		case NESTED_SINGLE:
+			obj = char_ptr(prop, base);
+
+			if (obj) {
+				*(void **)property_ptr(prop, base) = NULL;
+				config_free_object(prop->nested, obj);
+			}
+
 			break;
 
 		default:
 			break;
 		}
 	}
+
+	if (spec->free)
+		spec->free(base);
 
 	free(base);
 }
@@ -351,7 +496,7 @@ config_parse_value(const char **input, const config_prop_t *prop, void *base)
 	else {
 		p = *input + strcspn(*input, "{;\n");
 
-		while (p > *input && isspace(*p))
+		while (p > *input && isspace(p[-1]))
 			p--;
 
 		if (p - *input >= (ssize_t)sizeof(buf))
@@ -400,7 +545,13 @@ config_parse_value(const char **input, const config_prop_t *prop, void *base)
 
 			break;
 
-		case BLOCK:
+		case NESTED_SINGLE:
+			if (char_ptr(prop, base))
+				return parse_error("The '%s' property may only appear once within this block", prop->name);
+
+			/* fall through */
+
+		case NESTED_MULTIPLE:
 			obj = config_alloc_object(prop->nested, buflen ? buf : NULL);
 
 			if (!obj)
@@ -412,7 +563,10 @@ config_parse_value(const char **input, const config_prop_t *prop, void *base)
 				return false;
 			}
 
-			list_add_tail((struct list_head *)obj, list_ptr(prop, base));
+			if (prop->type == NESTED_SINGLE)
+				char_ptr(prop, base) = (char *)obj;
+			else
+				list_add_tail((struct list_head *)obj, list_ptr(prop, base));
 
 			return true;
 		}
@@ -486,46 +640,399 @@ print_error_pos(const char *input, const char *off)
 		}
 	}
 
-	uwsd_log_err(NULL, "In line %zu, byte %zu.\n", line, byte);
-	uwsd_log_err(NULL, "Near here:\n\n  `%.*s`\n\n", (int)strcspn(input, "\n"), input);
+	uwsd_log_err(NULL, "In line %zu, byte %zu.", line, byte);
+	uwsd_log_err(NULL, "Near here:");
+	uwsd_log_err(NULL, "  `%.*s`", (int)strcspn(input, "\n"), input);
 }
 
 
 static bool
-parse_basic_auth(void *obj, const char *label)
+parse_protocol_match(void *obj, const char *label)
+{
+	uwsd_match_t *match = obj;
+
+	if (!strcasecmp(label, "http"))
+		match->data.protocol = UWSD_PROTOCOL_HTTP;
+	else if (!strcasecmp(label, "ws"))
+		match->data.protocol = UWSD_PROTOCOL_WS;
+	else
+		return parse_error("Unrecognized protocol, expect either 'http' or 'ws'");
+
+	match->type = UWSD_MATCH_PROTOCOL;
+
+	return true;
+}
+
+static bool
+parse_hostname_match(void *obj, const char *label)
+{
+	uwsd_match_t *match = obj;
+
+	if (!label || !*label)
+		return parse_error("Expecting hostname value for 'match-hostname' property");
+
+	match->type = UWSD_MATCH_HOSTNAME;
+	match->data.value = xstrdup(label);
+
+	return true;
+}
+
+static bool
+parse_path_match(void *obj, const char *label)
+{
+	uwsd_match_t *match = obj;
+
+	if (!label || *label != '/')
+		return parse_error("Expecting absolute path value for 'match-path' property");
+
+	match->type = UWSD_MATCH_PATH;
+	match->data.value = xstrdup(label);
+
+	return true;
+}
+
+static bool
+check_path(const char *path, bool directory, char **dest)
+{
+	struct stat s;
+
+	if (!path || !*path)
+		return parse_error("Expecting path value");
+
+	if (stat(path, &s))
+		return parse_error("Unable to stat '%s': %m", path);
+
+	if (!directory && !S_ISREG(s.st_mode))
+		return parse_error("Path '%s' exists but does not point to a regular file", path);
+
+	if (directory && !S_ISDIR(s.st_mode))
+		return parse_error("Path '%s' exists but does not point to a directory", path);
+
+	*dest = realpath(path, NULL);
+
+	if (!*dest)
+		return parse_error("Unable to resolve absolute path of '%s': %m", path);
+
+	return true;
+}
+
+static bool
+parse_serve_file(void *obj, const char *label)
+{
+	uwsd_action_t *action = obj;
+
+	action->type = UWSD_ACTION_FILE;
+
+	return check_path(label, false, &action->data.file);
+}
+
+static bool
+parse_serve_directory(void *obj, const char *label)
+{
+	uwsd_action_t *action = obj;
+
+	action->type = UWSD_ACTION_DIRECTORY;
+
+	return check_path(label, true, &action->data.directory);
+}
+
+static bool
+parse_run_script(void *obj, const char *label)
+{
+	uwsd_action_t *action = obj;
+	char *path = NULL;
+	bool rv;
+
+	action->type = UWSD_ACTION_SCRIPT;
+	rv = check_path(label, false, &path) && uwsd_script_init(action, path);
+
+	free(path);
+
+	return rv;
+}
+
+static bool
+parse_hostname_port(const char *label, const char *prop, char **hostname, uint16_t *port)
+{
+	int labellen, n;
+	const char *p;
+	char *e;
+
+	if (!label)
+		return parse_error("Expecting hostname:port value for '%s' property", prop);
+
+	if (*label == '[') {
+		p = strchr(label, ']');
+
+		if (!p)
+			return parse_error("Invalid IPv6 address literal for '%s' property", prop);
+
+		labellen = (p - label) - 1;
+		label++;
+
+		if (p[1] != ':')
+			return parse_error("Missing port value for '%s' property", prop);
+	}
+	else {
+		p = strchr(label, ':');
+
+		if (!p)
+			return parse_error("Missing port value for '%s' property", prop);
+
+		labellen = p - label;
+	}
+
+	n = strtol(++p, &e, 10);
+
+	if (e == p || *e || n < 0 || n > 65535)
+		return parse_error("Invalid port for '%s' property", prop);
+
+	*port = n;
+	xasprintf(hostname, "%.*s", labellen, label);
+
+	return true;
+}
+
+static bool
+parse_proxy_common(void *obj, const char *label, uwsd_action_type_t type, const char *prop)
+{
+	uwsd_action_t *action = obj;
+
+	action->type = type;
+
+	/* set default timeouts */
+	action->data.proxy.connect_timeout = 10000;
+	action->data.proxy.transfer_timeout = 10000;
+	action->data.proxy.idle_timeout = 60000;
+
+	return parse_hostname_port(label, prop,
+		&action->data.proxy.hostname,
+		&action->data.proxy.port);
+}
+
+static bool
+parse_proxy_tcp(void *obj, const char *label)
+{
+	return parse_proxy_common(obj, label, UWSD_ACTION_TCP_PROXY, "proxy-tcp");
+}
+
+static bool
+parse_proxy_udp(void *obj, const char *label)
+{
+	return parse_proxy_common(obj, label, UWSD_ACTION_UDP_PROXY, "proxy-udp");
+}
+
+static bool
+parse_proxy_unix(void *obj, const char *label)
+{
+	return parse_proxy_common(obj, label, UWSD_ACTION_UNIX_PROXY, "proxy-unix");
+}
+
+static bool
+validate_action(void *obj)
+{
+	uwsd_action_t *action = obj;
+	struct stat s;
+
+	switch (action->type) {
+	case UWSD_ACTION_FILE:
+		if (stat(action->data.file, &s))
+			return parse_error("Failed to stat '%s': %m", action->data.file);
+
+		if (!S_ISREG(s.st_mode))
+			return parse_error("Path '%s' exists but is not a regular file", action->data.file);
+
+		break;
+
+	case UWSD_ACTION_DIRECTORY:
+		if (stat(action->data.file, &s))
+			return parse_error("Failed to stat '%s': %m", action->data.directory);
+
+		if (!S_ISDIR(s.st_mode))
+			return parse_error("Path '%s' exists but is not a directory", action->data.directory);
+
+		break;
+
+	case UWSD_ACTION_SCRIPT:
+		break;
+
+	case UWSD_ACTION_TCP_PROXY:
+	case UWSD_ACTION_UDP_PROXY:
+	case UWSD_ACTION_UNIX_PROXY:
+		if (action->data.proxy.connect_timeout < 1)
+			return parse_error("Invalid connect-timeout");
+
+		if (action->data.proxy.transfer_timeout < 1)
+			return parse_error("Invalid transfer-timeout");
+
+		if (action->data.proxy.idle_timeout < 1)
+			return parse_error("Invalid idle-timeout");
+
+		break;
+	}
+
+	return true;
+}
+
+static void
+free_action(void *obj)
+{
+	uwsd_action_t *action = obj;
+
+	switch (action->type) {
+	case UWSD_ACTION_FILE:       return free(action->data.file);
+	case UWSD_ACTION_DIRECTORY:  return free(action->data.directory);
+	case UWSD_ACTION_SCRIPT:     return uwsd_script_free(action);
+	case UWSD_ACTION_TCP_PROXY:  return free(action->data.proxy.hostname);
+	case UWSD_ACTION_UDP_PROXY:  return free(action->data.proxy.hostname);
+	case UWSD_ACTION_UNIX_PROXY: return free(action->data.proxy.hostname);
+	}
+}
+
+static void
+free_match(void *obj)
+{
+	uwsd_match_t *match = obj;
+
+	switch (match->type) {
+	case UWSD_MATCH_PATH:     return free(match->data.value);
+	case UWSD_MATCH_HOSTNAME: return free(match->data.value);
+	default:                  break;
+	}
+}
+
+
+static bool
+parse_auth_basic(void *obj, const char *label)
 {
 	uwsd_auth_t *auth = obj;
 
 	auth->type = UWSD_AUTH_BASIC;
+	auth->data.basic.realm = xstrdup(label ? label : "Protected area");
 
 	return true;
 }
 
 static bool
-validate_basic_auth(void *obj)
-{
-	uwsd_auth_t *auth = obj;
-
-	if (!auth->data.basic.password && !auth->data.basic.shadow)
-		return parse_error("Require either 'password' or 'shadow-lookup' property");
-
-	if (auth->data.basic.password && auth->data.basic.shadow)
-		return parse_error("The properties 'password' and 'shadow-lookup' are exclusive");
-
-	if (!auth->data.basic.realm)
-		auth->data.basic.realm = xstrdup("Protected area");
-
-	return true;
-}
-
-static bool
-parse_mtls_auth(void *obj, const char *label)
+parse_auth_mtls(void *obj, const char *label)
 {
 	uwsd_auth_t *auth = obj;
 
 	auth->type = UWSD_AUTH_MTLS;
 
+	if (label)
+		return parse_error("Value not allowed for 'auth-mtls' property");
+
 	return true;
+}
+
+static bool
+validate_auth(void *obj)
+{
+	uwsd_auth_t *auth = obj;
+
+	switch (auth->type) {
+	case UWSD_AUTH_BASIC:
+		if (!auth->data.basic.username)
+			return parse_error("Require property 'username' for 'auth-basic'");
+
+		if (!auth->data.basic.password && !auth->data.basic.lookup_shadow)
+			return parse_error("Require property 'password' or 'lookup-shadow' for 'auth-basic'");
+
+		if (auth->data.basic.password && auth->data.basic.lookup_shadow)
+			return parse_error("Properties 'password' and 'lookup-shadow' are exclusive");
+
+		break;
+
+	case UWSD_AUTH_MTLS:
+		break;
+	}
+
+	return true;
+}
+
+static void
+free_auth(void *obj)
+{
+	uwsd_auth_t *auth = obj;
+
+	switch (auth->type) {
+	case UWSD_AUTH_BASIC:
+		free(auth->data.basic.realm);
+		break;
+
+	case UWSD_AUTH_MTLS:
+		break;
+	}
+}
+
+
+static bool
+parse_listen(void *obj, const char *label)
+{
+	uwsd_listen_t *listen = obj;
+	char *hostname;
+	uint16_t port;
+	bool rv;
+
+	/* set default timeouts */
+	listen->request_timeout = 1000;
+	listen->transfer_timeout = 10000;
+	listen->idle_timeout = 60000;
+
+	if (!parse_hostname_port(label, "listen", &hostname, &port))
+		return false;
+
+	rv = uwsd_listen_init(listen, hostname, port);
+
+	free(hostname);
+
+	return rv;
+}
+
+static bool
+validate_listen(void *obj)
+{
+	uwsd_listen_t *listen = obj;
+
+	if (listen->request_timeout < 1)
+		return parse_error("Invalid request-timeout");
+
+	if (listen->transfer_timeout < 1)
+		return parse_error("Invalid transfer-timeout");
+
+	if (listen->idle_timeout < 1)
+		return parse_error("Invalid idle-timeout");
+
+	if (!listen->default_action && list_empty(&listen->matches))
+		return parse_error("Listen declares neither action nor match directives");
+
+	return true;
+}
+
+static void
+free_listen(void *obj)
+{
+	uwsd_listen_t *listen = obj;
+
+	uwsd_listen_free(listen);
+}
+
+
+static bool
+validate_ssl(void *obj)
+{
+	uwsd_ssl_t *ssl = obj;
+
+	return uwsd_ssl_ctx_init(ssl);
+}
+
+static void
+free_ssl(void *obj)
+{
+	uwsd_ssl_t *ssl = obj;
+
+	return uwsd_ssl_ctx_free(ssl);
 }
 
 

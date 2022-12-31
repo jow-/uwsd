@@ -30,6 +30,7 @@
 #include "ws.h"
 #include "client.h"
 #include "listen.h"
+#include "log.h"
 
 
 static uc_value_t *
@@ -361,8 +362,9 @@ ucv_clear(uc_value_t **uv)
 
 
 __hidden bool
-uwsd_script_init(uwsd_backend_t *be)
+uwsd_script_init(uwsd_action_t *action, const char *path)
 {
+	uc_vm_t *vm = &action->data.script.vm;
 	uc_source_t *source;
 	uc_program_t *prog;
 	uc_value_t *result;
@@ -373,43 +375,43 @@ uwsd_script_init(uwsd_backend_t *be)
 		"{%%\n"
 		"import * as cb from '%s';\n"
 		"return [ cb.onConnect, cb.onData, cb.onRequest, cb.onBody, cb.onClose ];\n",
-		be->addr);
+		path);
 
 	source = uc_source_new_buffer("bootstrap script", script, len);
 	prog = uc_compile(NULL, source, &err);
 	uc_source_put(source);
 
 	if (!prog) {
-		fprintf(stderr, "Failed to compile handler script: %s\n", err);
+		uwsd_log_err(NULL, "Failed to compile handler script: %s", err);
 
 		return false;
 	}
 
-	uc_vm_init(&be->script.vm, NULL);
-	uc_vm_exception_handler_set(&be->script.vm, handle_exception);
-	uc_stdlib_load(uc_vm_scope_get(&be->script.vm));
+	uc_vm_init(vm, NULL);
+	uc_vm_exception_handler_set(vm, handle_exception);
+	uc_stdlib_load(uc_vm_scope_get(vm));
 
-	rc = uc_vm_execute(&be->script.vm, prog, &result);
+	rc = uc_vm_execute(vm, prog, &result);
 
 	uc_program_put(prog);
 
 	switch (rc) {
 	case STATUS_OK:
-		uc_type_declare(&be->script.vm, "uwsd.connection", conn_fns, close_conn);
-		uc_type_declare(&be->script.vm, "uwsd.request", req_fns, close_req);
+		uc_type_declare(vm, "uwsd.connection", conn_fns, close_conn);
+		uc_type_declare(vm, "uwsd.request", req_fns, close_req);
 
-		be->script.onConnect = ucv_get(ucv_array_get(result, 0));
-		be->script.onData    = ucv_get(ucv_array_get(result, 1));
-		be->script.onRequest = ucv_get(ucv_array_get(result, 2));
-		be->script.onBody    = ucv_get(ucv_array_get(result, 3));
-		be->script.onClose   = ucv_get(ucv_array_get(result, 4));
+		action->data.script.onConnect = ucv_get(ucv_array_get(result, 0));
+		action->data.script.onData    = ucv_get(ucv_array_get(result, 1));
+		action->data.script.onRequest = ucv_get(ucv_array_get(result, 2));
+		action->data.script.onBody    = ucv_get(ucv_array_get(result, 3));
+		action->data.script.onClose   = ucv_get(ucv_array_get(result, 4));
 
 		ucv_put(result);
 
 		break;
 
 	case STATUS_EXIT:
-		fprintf(stderr, "Handler script exited with code %d\n", (int)ucv_uint64_get(result));
+		uwsd_log_err(NULL, "Handler script exited with code %d", (int)ucv_uint64_get(result));
 		ucv_put(result);
 
 		break;
@@ -424,7 +426,8 @@ uwsd_script_init(uwsd_backend_t *be)
 __hidden bool
 uwsd_script_connect(uwsd_client_context_t *cl, int wakefd)
 {
-	uwsd_backend_t *be = uwsd_endpoint_backend_get(cl->endpoint);
+	uc_vm_t *vm = &cl->action->data.script.vm;
+	uwsd_action_t *action = cl->action;
 	uc_value_t *ctx, *protocols = NULL;
 	uc_resource_type_t *conn_type;
 	uc_exception_type_t ex;
@@ -432,13 +435,13 @@ uwsd_script_connect(uwsd_client_context_t *cl, int wakefd)
 	size_t plen;
 	void **clp;
 
-	conn_type = ucv_resource_type_lookup(&be->script.vm, "uwsd.connection");
+	conn_type = ucv_resource_type_lookup(vm, "uwsd.connection");
 	assert(conn_type);
 
 	cl->script.conn = uc_resource_new(conn_type, cl);
 	cl->script.fd = -1;
 
-	if (be->script.onConnect) {
+	if (action->data.script.onConnect) {
 		protohdr = uwsd_http_header_lookup(cl, "Sec-WebSocket-Protocol");
 
 		if (protohdr) {
@@ -447,35 +450,35 @@ uwsd_script_connect(uwsd_client_context_t *cl, int wakefd)
 			     p += plen + strspn(p + plen, ", \t\r\n"), plen = strcspn(p, ", \t\r\n")) {
 
 				if (!protocols)
-					protocols = ucv_array_new(&be->script.vm);
+					protocols = ucv_array_new(vm);
 
 				ucv_array_push(protocols,
 					ucv_string_new_length(p, plen));
 			}
 		}
 
-		uc_vm_stack_push(&be->script.vm, ucv_get(be->script.onConnect));
-		uc_vm_stack_push(&be->script.vm, ucv_get(cl->script.conn));
-		uc_vm_stack_push(&be->script.vm, protocols);
+		uc_vm_stack_push(vm, ucv_get(action->data.script.onConnect));
+		uc_vm_stack_push(vm, ucv_get(cl->script.conn));
+		uc_vm_stack_push(vm, protocols);
 
 		clp = ucv_resource_dataptr(cl->script.conn, "uwsd.connection");
-		ex = uc_vm_call(&be->script.vm, false, 2);
+		ex = uc_vm_call(vm, false, 2);
 
 		if (!clp || !*clp)
 			return false; /* onConnect() function freed the connection */
 
 		if (ex != EXCEPTION_NONE) {
-			ctx = ucv_object_get(ucv_array_get(be->script.vm.exception.stacktrace, 0), "context", NULL);
+			ctx = ucv_object_get(ucv_array_get(vm->exception.stacktrace, 0), "context", NULL);
 
 			uwsd_http_error_send(cl, 500, "Internal Server Error",
 				"Exception in onConnect(): %s\n%s",
-					be->script.vm.exception.message,
+					vm->exception.message,
 					ucv_string_get(ctx));
 
 			return false;
 		}
 
-		ucv_put(uc_vm_stack_pop(&be->script.vm));
+		ucv_put(uc_vm_stack_pop(vm));
 
 		if (!cl->script.proto) {
 			uwsd_http_error_send(cl, 500, "Internal Server Error",
@@ -497,12 +500,13 @@ uwsd_script_connect(uwsd_client_context_t *cl, int wakefd)
 __hidden bool
 uwsd_script_send(uwsd_client_context_t *cl, const void *data, size_t len)
 {
-	uwsd_backend_t *be = uwsd_endpoint_backend_get(cl->endpoint);
+	uc_vm_t *vm = &cl->action->data.script.vm;
+	uwsd_action_t *action = cl->action;
 	uc_exception_type_t ex;
 	uc_value_t *ctx;
 	bool final;
 
-	if (!be->script.onData)
+	if (!action->data.script.onData)
 		return true;
 
 	final = (cl->script.msgoff + len == cl->ws.len);
@@ -512,25 +516,25 @@ uwsd_script_send(uwsd_client_context_t *cl, const void *data, size_t len)
 	else
 		cl->script.msgoff += len;
 
-	uc_vm_stack_push(&be->script.vm, ucv_get(be->script.onData));
-	uc_vm_stack_push(&be->script.vm, ucv_get(cl->script.conn));
-	uc_vm_stack_push(&be->script.vm, ucv_string_new_length(data, len));
-	uc_vm_stack_push(&be->script.vm, ucv_boolean_new(final));
+	uc_vm_stack_push(vm, ucv_get(action->data.script.onData));
+	uc_vm_stack_push(vm, ucv_get(cl->script.conn));
+	uc_vm_stack_push(vm, ucv_string_new_length(data, len));
+	uc_vm_stack_push(vm, ucv_boolean_new(final));
 
-	ex = uc_vm_call(&be->script.vm, false, 3);
+	ex = uc_vm_call(vm, false, 3);
 
 	if (ex != EXCEPTION_NONE) {
-		ctx = ucv_object_get(ucv_array_get(be->script.vm.exception.stacktrace, 0), "context", NULL);
+		ctx = ucv_object_get(ucv_array_get(vm->exception.stacktrace, 0), "context", NULL);
 
 		uwsd_ws_connection_close(cl, STATUS_INTERNAL_ERROR,
 			"Exception in onData(): %s\n%s",
-				be->script.vm.exception.message,
+				vm->exception.message,
 				ucv_string_get(ctx));
 
 		return false;
 	}
 
-	ucv_put(uc_vm_stack_pop(&be->script.vm));
+	ucv_put(uc_vm_stack_pop(vm));
 
 	return true;
 }
@@ -538,30 +542,33 @@ uwsd_script_send(uwsd_client_context_t *cl, const void *data, size_t len)
 __hidden void
 uwsd_script_close(uwsd_client_context_t *cl)
 {
-	uwsd_backend_t *be;
+	uwsd_action_t *action;
 	void **clptr;
 	size_t nargs;
+	uc_vm_t *vm;
 
 	assert(cl);
 
-	be = uwsd_endpoint_backend_get(cl->endpoint);
+	action = cl->action;
 
-	if (cl->endpoint && be->script.onClose) {
-		if (be->script.vm.exception.type != EXCEPTION_NONE)
-			uc_vm_exception_handler_get(&be->script.vm)(&be->script.vm, &be->script.vm.exception);
+	if (action && action->data.script.onClose) {
+		vm = &action->data.script.vm;
 
-		uc_vm_stack_push(&be->script.vm, ucv_get(be->script.onClose));
-		uc_vm_stack_push(&be->script.vm, ucv_get(cl->script.conn));
+		if (vm->exception.type != EXCEPTION_NONE)
+			uc_vm_exception_handler_get(vm)(vm, &vm->exception);
+
+		uc_vm_stack_push(vm, ucv_get(action->data.script.onClose));
+		uc_vm_stack_push(vm, ucv_get(cl->script.conn));
 		nargs = 1;
 
-		if (cl->endpoint->type == UWSD_LISTEN_WS || cl->endpoint->type == UWSD_LISTEN_WSS) {
-			uc_vm_stack_push(&be->script.vm, cl->ws.error.code ? ucv_uint64_new(cl->ws.error.code) : NULL);
-			uc_vm_stack_push(&be->script.vm, cl->ws.error.msg ? ucv_string_new(cl->ws.error.msg) : NULL);
+		if (cl->protocol == UWSD_PROTOCOL_WS) {
+			uc_vm_stack_push(vm, cl->ws.error.code ? ucv_uint64_new(cl->ws.error.code) : NULL);
+			uc_vm_stack_push(vm, cl->ws.error.msg ? ucv_string_new(cl->ws.error.msg) : NULL);
 			nargs += 2;
 		}
 
-		if (uc_vm_call(&be->script.vm, false, nargs) == EXCEPTION_NONE)
-			ucv_put(uc_vm_stack_pop(&be->script.vm));
+		if (uc_vm_call(vm, false, nargs) == EXCEPTION_NONE)
+			ucv_put(uc_vm_stack_pop(vm));
 	}
 
 	clptr = ucv_resource_dataptr(cl->script.conn, NULL);
@@ -574,10 +581,24 @@ uwsd_script_close(uwsd_client_context_t *cl)
 	ucv_clear(&cl->script.proto);
 }
 
+__hidden void
+uwsd_script_free(uwsd_action_t *action)
+{
+	ucv_clear(&action->data.script.onConnect);
+	ucv_clear(&action->data.script.onData);
+	ucv_clear(&action->data.script.onClose);
+
+	ucv_clear(&action->data.script.onRequest);
+	ucv_clear(&action->data.script.onBody);
+
+	uc_vm_free(&action->data.script.vm);
+}
+
 __hidden bool
 uwsd_script_request(uwsd_client_context_t *cl, int downstream)
 {
-	uwsd_backend_t *be = uwsd_endpoint_backend_get(cl->endpoint);
+	uc_vm_t *vm = &cl->action->data.script.vm;
+	uwsd_action_t *action = cl->action;
 	uc_resource_type_t *conn_type;
 	uc_exception_type_t ex;
 	uc_value_t *ctx;
@@ -593,32 +614,32 @@ uwsd_script_request(uwsd_client_context_t *cl, int downstream)
 		[HTTP_CONNECT] = "CONNECT"
 	};
 
-	conn_type = ucv_resource_type_lookup(&be->script.vm, "uwsd.request");
+	conn_type = ucv_resource_type_lookup(vm, "uwsd.request");
 	assert(conn_type);
 
 	cl->script.conn = uc_resource_new(conn_type, cl);
 	cl->script.fd = downstream;
 
-	if (be->script.onRequest) {
-		uc_vm_stack_push(&be->script.vm, ucv_get(be->script.onRequest));
-		uc_vm_stack_push(&be->script.vm, ucv_get(cl->script.conn));
-		uc_vm_stack_push(&be->script.vm, ucv_string_new(http_method_names[cl->request_method]));
-		uc_vm_stack_push(&be->script.vm, ucv_string_new(cl->request_uri));
+	if (action->data.script.onRequest) {
+		uc_vm_stack_push(vm, ucv_get(action->data.script.onRequest));
+		uc_vm_stack_push(vm, ucv_get(cl->script.conn));
+		uc_vm_stack_push(vm, ucv_string_new(http_method_names[cl->request_method]));
+		uc_vm_stack_push(vm, ucv_string_new(cl->request_uri));
 
-		ex = uc_vm_call(&be->script.vm, false, 3);
+		ex = uc_vm_call(vm, false, 3);
 
 		if (ex != EXCEPTION_NONE) {
-			ctx = ucv_object_get(ucv_array_get(be->script.vm.exception.stacktrace, 0), "context", NULL);
+			ctx = ucv_object_get(ucv_array_get(vm->exception.stacktrace, 0), "context", NULL);
 
 			uwsd_http_error_send(cl, 500, "Internal Server Error",
 				"Exception in onRequest(): %s\n%s",
-					be->script.vm.exception.message,
+					vm->exception.message,
 					ucv_string_get(ctx));
 
 			return false;
 		}
 
-		ucv_put(uc_vm_stack_pop(&be->script.vm));
+		ucv_put(uc_vm_stack_pop(vm));
 	}
 	else {
 		uwsd_http_error_send(cl, 501, "Not Implemented",
@@ -633,31 +654,32 @@ uwsd_script_request(uwsd_client_context_t *cl, int downstream)
 __hidden bool
 uwsd_script_bodydata(uwsd_client_context_t *cl, const void *data, size_t len)
 {
-	uwsd_backend_t *be = uwsd_endpoint_backend_get(cl->endpoint);
+	uc_vm_t *vm = &cl->action->data.script.vm;
+	uwsd_action_t *action = cl->action;
 	uc_exception_type_t ex;
 	uc_value_t *ctx;
 
-	if (!be->script.onBody)
+	if (!action->data.script.onBody)
 		return true;
 
-	uc_vm_stack_push(&be->script.vm, ucv_get(be->script.onBody));
-	uc_vm_stack_push(&be->script.vm, ucv_get(cl->script.conn));
-	uc_vm_stack_push(&be->script.vm, ucv_string_new_length(data, len));
+	uc_vm_stack_push(vm, ucv_get(action->data.script.onBody));
+	uc_vm_stack_push(vm, ucv_get(cl->script.conn));
+	uc_vm_stack_push(vm, ucv_string_new_length(data, len));
 
-	ex = uc_vm_call(&be->script.vm, false, 2);
+	ex = uc_vm_call(vm, false, 2);
 
 	if (ex != EXCEPTION_NONE) {
-		ctx = ucv_object_get(ucv_array_get(be->script.vm.exception.stacktrace, 0), "context", NULL);
+		ctx = ucv_object_get(ucv_array_get(vm->exception.stacktrace, 0), "context", NULL);
 
 		uwsd_http_error_send(cl, 500, "Internal Server Error",
 			"Exception in onBody(): %s\n%s",
-				be->script.vm.exception.message,
+				vm->exception.message,
 				ucv_string_get(ctx));
 
 		return false;
 	}
 
-	ucv_put(uc_vm_stack_pop(&be->script.vm));
+	ucv_put(uc_vm_stack_pop(vm));
 
 	return true;
 }

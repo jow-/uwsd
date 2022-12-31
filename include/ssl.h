@@ -19,11 +19,23 @@
 
 #include <sys/uio.h>
 
-#include "client.h"
+#include <openssl/ssl.h>
+
 
 typedef struct uwsd_client_context uwsd_client_context_t;
+typedef struct uwsd_connection uwsd_connection_t;
 
-__hidden bool uwsd_ssl_load_certificates(const char *);
+typedef struct {
+	bool verify_peer;
+	char *private_key, *certificate, *certificate_directory;
+	struct {
+		SSL_CTX **entries;
+		size_t count;
+	} contexts;
+} uwsd_ssl_t;
+
+__hidden bool uwsd_ssl_ctx_init(uwsd_ssl_t *);
+__hidden void uwsd_ssl_ctx_free(uwsd_ssl_t *);
 
 __hidden bool uwsd_ssl_init(uwsd_client_context_t *);
 __hidden void uwsd_ssl_free(uwsd_client_context_t *);

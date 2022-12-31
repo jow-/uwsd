@@ -76,6 +76,7 @@ typedef enum {
 } uwsd_http_state_t;
 
 typedef struct uwsd_client_context uwsd_client_context_t;
+typedef enum uwsd_connection_state uwsd_connection_state_t;
 
 __hidden char *uwsd_http_header_lookup(uwsd_client_context_t *, const char *);
 __hidden bool uwsd_http_header_contains(uwsd_client_context_t *, const char *, const char *);

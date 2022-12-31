@@ -44,7 +44,7 @@ typedef struct uwsd_client_context uwsd_client_context_t;
 	STATE(WS_DOWNSTREAM_SEND),	\
 	STATE(WS_DOWNSTREAM_RECV)
 
-typedef enum {
+typedef enum uwsd_connection_state {
 #define STATE(name) STATE_CONN_##name
 	CONN_STATE_LIST
 #undef STATE
@@ -60,11 +60,24 @@ enum {
 	EVENT_WRITABLE = (1 << 1)
 };
 
+typedef enum {
+	TIMEOUT_NONE,
+
+	TIMEOUT_DOWNSTREAM_REQUEST,
+	TIMEOUT_DOWNSTREAM_TRANSFER,
+	TIMEOUT_DOWNSTREAM_IDLE,
+
+	TIMEOUT_UPSTREAM_CONNECT,
+	TIMEOUT_UPSTREAM_TRANSFER,
+
+	TIMEOUT_XSTREAM_IDLE
+} uwsd_timeout_kind_t;
+
 typedef struct {
 	uint8_t channels;
 	uint8_t events;
 	void (*io_cb)(uwsd_client_context_t *, uwsd_connection_state_t, bool);
-	int timeout;
+	uwsd_timeout_kind_t timeout;
 	void (*timeout_cb)(uwsd_client_context_t *, uwsd_connection_state_t, bool);
 } uwsd_state_entry_t;
 
