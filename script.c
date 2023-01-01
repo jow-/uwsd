@@ -77,6 +77,7 @@ uc_script_send(uc_vm_t *vm, size_t nargs)
 {
 	uwsd_client_context_t **cl = uc_fn_this("uwsd.connection");
 	uc_value_t *data = uc_fn_arg(0);
+	int wakefd;
 
 	if (!cl || !*cl)
 		return NULL;
@@ -84,8 +85,10 @@ uc_script_send(uc_vm_t *vm, size_t nargs)
 	if (ucv_type(data) != UC_STRING)
 		return NULL;
 
+	wakefd = (*cl)->script.fd;
+
 	if (!uwsd_ws_reply_send(*cl, OPCODE_TEXT, ucv_string_get(data), ucv_string_length(data))) {
-		write((*cl)->script.fd, ".", 1);
+		write(wakefd, ".", 1);
 
 		return ucv_boolean_new(false);
 	}
