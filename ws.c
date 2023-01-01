@@ -381,19 +381,18 @@ ws_downstream_tx(uwsd_client_context_t *cl, uwsd_ws_opcode_t opcode, bool add_he
 	errno = 0;
 
 	if (!list_empty(&cl->ws.txq) || !send_iov(&cl->downstream, iov, iolen)) {
-		if (!list_empty(&cl->ws.txq)) {
-			uwsd_ws_debug(cl, "TX in progress (qlen %zu), delaying send...", cl->ws.txqlen);
+		if (errno) {
+			ws_terminate(cl, STATUS_TERMINATED, "Peer send error: %s", strerror(errno));
 		}
 		else {
-			uwsd_ws_debug(cl, "Partial TX, delaying sending remainder...");
-		}
+			if (!list_empty(&cl->ws.txq))
+				uwsd_ws_debug(cl, "TX in progress (qlen %zu), delaying send...", cl->ws.txqlen);
+			else
+				uwsd_ws_debug(cl, "Partial TX, delaying sending remainder...");
 
-		if (errno)
-			ws_terminate(cl, STATUS_TERMINATED, "Peer send error: %s", strerror(errno));
-		else
 			ws_add_txq(cl, iov, iolen);
-
-		uwsd_state_transition(cl, STATE_CONN_WS_DOWNSTREAM_SEND);
+			uwsd_state_transition(cl, STATE_CONN_WS_DOWNSTREAM_SEND);
+		}
 
 		return false;
 	}
