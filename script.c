@@ -33,6 +33,17 @@
 #include "log.h"
 
 
+static const char *http_method_names[] = {
+	[HTTP_GET]     = "GET",
+	[HTTP_POST]    = "POST",
+	[HTTP_PUT]     = "PUT",
+	[HTTP_HEAD]    = "HEAD",
+	[HTTP_OPTIONS] = "OPTIONS",
+	[HTTP_DELETE]  = "DELETE",
+	[HTTP_TRACE]   = "TRACE",
+	[HTTP_CONNECT] = "CONNECT"
+};
+
 static uc_value_t *
 uc_script_accept(uc_vm_t *vm, size_t nargs)
 {
@@ -174,6 +185,17 @@ uc_script_http_version(uc_vm_t *vm, size_t nargs)
 }
 
 static uc_value_t *
+uc_script_request_method(uc_vm_t *vm, size_t nargs)
+{
+	uwsd_client_context_t **cl = uc_fn_this("uwsd.request");
+
+	if (!cl || !*cl)
+		return NULL;
+
+	return ucv_string_new(http_method_names[(*cl)->request_method]);
+}
+
+static uc_value_t *
 uc_script_request_uri(uc_vm_t *vm, size_t nargs)
 {
 	uwsd_client_context_t **cl = uc_fn_this("uwsd.request");
@@ -307,6 +329,7 @@ uc_script_reply(uc_vm_t *vm, size_t nargs)
 
 static const uc_function_list_t req_fns[] = {
 	{ "version", uc_script_http_version },
+	{ "method",  uc_script_request_method },
 	{ "uri",     uc_script_request_uri },
 	{ "header",  uc_script_request_header },
 	{ "data",    uc_script_data },
@@ -602,17 +625,6 @@ uwsd_script_request(uwsd_client_context_t *cl, int downstream)
 	uc_resource_type_t *conn_type;
 	uc_exception_type_t ex;
 	uc_value_t *ctx;
-
-	const char *http_method_names[] = {
-		[HTTP_GET]     = "GET",
-		[HTTP_POST]    = "POST",
-		[HTTP_PUT]     = "PUT",
-		[HTTP_HEAD]    = "HEAD",
-		[HTTP_OPTIONS] = "OPTIONS",
-		[HTTP_DELETE]  = "DELETE",
-		[HTTP_TRACE]   = "TRACE",
-		[HTTP_CONNECT] = "CONNECT"
-	};
 
 	conn_type = ucv_resource_type_lookup(vm, "uwsd.request");
 	assert(conn_type);
