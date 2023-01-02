@@ -245,7 +245,7 @@ uc_script_reply(uc_vm_t *vm, size_t nargs)
 		}
 	}
 
-	sprintbuf(buf, "HTTP/%hu.%hu %03d %s\r\n",
+	sprintbuf(buf, "HTTP/%hu.%hu %03hu %s\r\n",
 		(*cl)->http_version >> 8, (*cl)->http_version & 0xff,
 		status, reason);
 
