@@ -122,56 +122,6 @@ ucv_clear(uc_value_t **uv)
 	*uv = NULL;
 }
 
-static bool
-tlv_send(int fd, uint16_t type, uint16_t len, const void *value)
-{
-	struct iovec iov[3];
-	ssize_t total;
-
-	type = htons(type);
-	len = htons(len);
-
-	iov[0].iov_base = &type;
-	iov[0].iov_len = sizeof(type);
-
-	iov[1].iov_base = &len;
-	iov[1].iov_len = sizeof(len);
-
-	iov[2].iov_base = (void *)value;
-	iov[2].iov_len = ntohs(len);
-
-	total = iov[0].iov_len + iov[1].iov_len + iov[2].iov_len;
-
-	return writev(fd, iov, 3) == total;
-}
-
-static bool
-header_tlv_send(int fd, uwsd_http_header_t *hdr)
-{
-	size_t nlen = strlen(hdr->name);
-	size_t vlen = strlen(hdr->value);
-	uint16_t type = htons(UWSD_SCRIPT_DATA_HTTP_HEADER);
-	uint16_t len = htons(nlen + vlen + 1);
-	struct iovec iov[4];
-	ssize_t total;
-
-	iov[0].iov_base = &type;
-	iov[0].iov_len = sizeof(type);
-
-	iov[1].iov_base = &len;
-	iov[1].iov_len = sizeof(len);
-
-	iov[2].iov_base = hdr->name;
-	iov[2].iov_len = nlen + 1;
-
-	iov[3].iov_base = hdr->value;
-	iov[3].iov_len = vlen;
-
-	total = iov[0].iov_len + iov[1].iov_len + iov[2].iov_len + iov[3].iov_len;
-
-	return writev(fd, iov, 4) == total;
-}
-
 static int
 server_socket_setup(const char *sockpath)
 {
@@ -1284,48 +1234,60 @@ uwsd_script_init(uwsd_action_t *action, const char *path)
 }
 
 
-#define add_tlv(_type, _len, _data)   \
-	do {                              \
-		tlv[i].type = _type;          \
-		tlv[i].len = _len;            \
-		tlv[i].data = (void *)_data;  \
-		i++;                          \
-	} while(0)
+static size_t
+push_tlv(struct iovec **iov, uint16_t *type, uint16_t *len, const void *data)
+{
+	(*iov)->iov_base = (void *)type;
+	(*iov)->iov_len = sizeof(*type);
+	(*iov)++;
+
+	(*iov)->iov_base = (void *)len;
+	(*iov)->iov_len = sizeof(*len);
+	(*iov)++;
+
+	(*iov)->iov_base = (void *)data;
+	(*iov)->iov_len = ntohs(*len);
+
+	return sizeof(*type) + sizeof(*len) + ((*iov)++)->iov_len;
+}
+
+#define static_tlv(_iovp, _type, _len, _data) \
+	push_tlv(_iovp, &((uint16_t){ htons(_type) }), &((uint16_t){ htons(_len) }), _data)
+
+#define single_tlv(_iov, _type, _len, _data) \
+	static_tlv(&((struct iovec *){ _iov }), _type, _len, _data)
 
 __hidden bool
 uwsd_script_connect(uwsd_client_context_t *cl, const char *acceptkey)
 {
-	struct { uint16_t type; uint16_t len; void *data; } tlv[5 + cl->http_num_headers];
-	size_t i = 0, j;
+	uint16_t tv[cl->http_num_headers], lv[cl->http_num_headers];
+	struct iovec iov[(5 + cl->http_num_headers) * 3];
+	struct iovec *iop = iov;
+	ssize_t total = 0;
+	size_t i;
 
-	add_tlv(UWSD_SCRIPT_DATA_PEER_ADDR, sizeof(cl->sa.in6), &cl->sa.in6);
-	add_tlv(UWSD_SCRIPT_DATA_HTTP_VERSION, sizeof(cl->http_version), &cl->http_version);
-	add_tlv(UWSD_SCRIPT_DATA_HTTP_METHOD, sizeof(cl->request_method), &cl->request_method);
-	add_tlv(UWSD_SCRIPT_DATA_HTTP_URI, strlen(cl->request_uri), cl->request_uri);
+	total += static_tlv(&iop, UWSD_SCRIPT_DATA_PEER_ADDR, sizeof(cl->sa.in6), &cl->sa.in6);
+	total += static_tlv(&iop, UWSD_SCRIPT_DATA_HTTP_VERSION, sizeof(cl->http_version), &cl->http_version);
+	total += static_tlv(&iop, UWSD_SCRIPT_DATA_HTTP_METHOD, sizeof(cl->request_method), &cl->request_method);
+	total += static_tlv(&iop, UWSD_SCRIPT_DATA_HTTP_URI, strlen(cl->request_uri), cl->request_uri);
 
-	for (j = 0; j < cl->http_num_headers; j++)
-		add_tlv(UWSD_SCRIPT_DATA_HTTP_HEADER, 0, &cl->http_headers[j]);
-
-	add_tlv(UWSD_SCRIPT_DATA_WS_INIT, strlen(acceptkey) + 1, acceptkey);
-
-	for (j = 0; j < i; j++) {
-		if (tlv[j].type == UWSD_SCRIPT_DATA_HTTP_HEADER) {
-			if (!header_tlv_send(cl->upstream.ufd.fd, tlv[j].data))
-				return false;
-		}
-		else {
-			if (!tlv_send(cl->upstream.ufd.fd, tlv[j].type, tlv[j].len, tlv[j].data))
-				return false;
-		}
+	for (i = 0; i < cl->http_num_headers; i++) {
+		tv[i] = htons(UWSD_SCRIPT_DATA_HTTP_HEADER);
+		lv[i] = htons(strlen(cl->http_headers[i].name) + strlen(cl->http_headers[i].value) + 2);
+		total += push_tlv(&iop, &tv[i], &lv[i], cl->http_headers[i].name);
 	}
 
-	return true;
+	total += static_tlv(&iop, UWSD_SCRIPT_DATA_WS_INIT, strlen(acceptkey) + 1, acceptkey);
+
+	return (writev(cl->upstream.ufd.fd, iov, ARRAY_SIZE(iov)) == total);
 }
 
 
 __hidden bool
 uwsd_script_send(uwsd_client_context_t *cl, const void *data, size_t len)
 {
+	struct iovec iov[3];
+	ssize_t total;
 	uint16_t type;
 
 	assert(len <= sizeof(((script_connection_t *)NULL)->buf.data));
@@ -1337,17 +1299,20 @@ uwsd_script_send(uwsd_client_context_t *cl, const void *data, size_t len)
 	else
 		type = UWSD_SCRIPT_DATA_WS_EOF;
 
-	return tlv_send(cl->upstream.ufd.fd, type, len, data);
+	total = single_tlv(iov, type, len, data);
+
+	return (writev(cl->upstream.ufd.fd, iov, ARRAY_SIZE(iov)) == total);
 }
 
 __hidden void
 uwsd_script_close(uwsd_client_context_t *cl)
 {
+	struct iovec iov[3];
 	char statusbuf[125];
 	int statuslen = 2;
 
 	if (cl->protocol == UWSD_PROTOCOL_HTTP) {
-		tlv_send(cl->upstream.ufd.fd, UWSD_SCRIPT_DATA_HTTP_EOF, 0, "");
+		single_tlv(iov, UWSD_SCRIPT_DATA_HTTP_EOF, 0, "");
 	}
 	else {
 		statuslen = snprintf(statusbuf, sizeof(statusbuf), "%c%c%s",
@@ -1355,8 +1320,10 @@ uwsd_script_close(uwsd_client_context_t *cl)
 			(cl->ws.error.code ? cl->ws.error.code : 1000) % 256,
 			cl->ws.error.msg ? cl->ws.error.msg : "");
 
-		tlv_send(cl->upstream.ufd.fd, UWSD_SCRIPT_DATA_WS_EOF, statuslen + 1, statusbuf);
+		single_tlv(iov, UWSD_SCRIPT_DATA_WS_EOF, statuslen + 1, statusbuf);
 	}
+
+	writev(cl->upstream.ufd.fd, iov, ARRAY_SIZE(iov));
 }
 
 __hidden void
@@ -1374,39 +1341,39 @@ uwsd_script_free(uwsd_action_t *action)
 __hidden bool
 uwsd_script_request(uwsd_client_context_t *cl, int downstream)
 {
-	struct { uint16_t type; uint16_t len; void *data; } tlv[4 + cl->http_num_headers];
-	size_t i = 0, j;
+	uint16_t tv[cl->http_num_headers], lv[cl->http_num_headers];
+	struct iovec iov[(4 + cl->http_num_headers) * 3];
+	struct iovec *iop = iov;
+	ssize_t total = 0;
+	size_t i;
 
-	add_tlv(UWSD_SCRIPT_DATA_PEER_ADDR, sizeof(cl->sa.in6), &cl->sa.in6);
-	add_tlv(UWSD_SCRIPT_DATA_HTTP_VERSION, sizeof(cl->http_version), &cl->http_version);
-	add_tlv(UWSD_SCRIPT_DATA_HTTP_METHOD, sizeof(cl->request_method), &cl->request_method);
-	add_tlv(UWSD_SCRIPT_DATA_HTTP_URI, strlen(cl->request_uri), cl->request_uri);
+	total += static_tlv(&iop, UWSD_SCRIPT_DATA_PEER_ADDR, sizeof(cl->sa.in6), &cl->sa.in6);
+	total += static_tlv(&iop, UWSD_SCRIPT_DATA_HTTP_VERSION, sizeof(cl->http_version), &cl->http_version);
+	total += static_tlv(&iop, UWSD_SCRIPT_DATA_HTTP_METHOD, sizeof(cl->request_method), &cl->request_method);
+	total += static_tlv(&iop, UWSD_SCRIPT_DATA_HTTP_URI, strlen(cl->request_uri), cl->request_uri);
 
-	for (j = 0; j < cl->http_num_headers; j++)
-		add_tlv(UWSD_SCRIPT_DATA_HTTP_HEADER, 0, &cl->http_headers[j]);
-
-	for (j = 0; j < i; j++) {
-		if (tlv[j].type == UWSD_SCRIPT_DATA_HTTP_HEADER) {
-			if (!header_tlv_send(cl->upstream.ufd.fd, tlv[j].data))
-				return false;
-		}
-		else {
-			if (!tlv_send(cl->upstream.ufd.fd, tlv[j].type, tlv[j].len, tlv[j].data))
-				return false;
-		}
+	for (i = 0; i < cl->http_num_headers; i++) {
+		tv[i] = htons(UWSD_SCRIPT_DATA_HTTP_HEADER);
+		lv[i] = htons(strlen(cl->http_headers[i].name) + strlen(cl->http_headers[i].value) + 2);
+		total += push_tlv(&iop, &tv[i], &lv[i], cl->http_headers[i].name);
 	}
 
-	return true;
+	return (writev(cl->upstream.ufd.fd, iov, ARRAY_SIZE(iov)) == total);
 }
 
 __hidden bool
 uwsd_script_bodydata(uwsd_client_context_t *cl, const void *data, size_t len)
 {
-	uint16_t type = len ? UWSD_SCRIPT_DATA_HTTP_DATA : UWSD_SCRIPT_DATA_HTTP_EOF;
+	struct iovec iov[3];
+	ssize_t total;
 
 	assert(len <= sizeof(((script_connection_t *)NULL)->buf.data));
 
-	return tlv_send(cl->upstream.ufd.fd, type, len, data);
+	total = single_tlv(iov,
+		len ? UWSD_SCRIPT_DATA_HTTP_DATA : UWSD_SCRIPT_DATA_HTTP_EOF,
+		len, data);
+
+	return (writev(cl->upstream.ufd.fd, iov, ARRAY_SIZE(iov)) == total);
 }
 
 __hidden int
