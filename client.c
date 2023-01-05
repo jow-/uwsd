@@ -106,11 +106,8 @@ client_free(uwsd_client_context_t *cl, const char *reason, ...)
 	list_for_each_entry_safe(e, tmp, &cl->ws.txq, list)
 		free(e);
 
-	while (cl->http_num_headers > 0) {
-		cl->http_num_headers--;
-		free(cl->http_headers[cl->http_num_headers].name);
-		free(cl->http_headers[cl->http_num_headers].value);
-	}
+	while (cl->http_num_headers > 0)
+		free(cl->http_headers[--cl->http_num_headers].name);
 
 	free(cl->http_headers);
 	free(cl->request_uri);

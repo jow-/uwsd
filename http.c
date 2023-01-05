@@ -87,11 +87,8 @@ static void
 http_state_reset(uwsd_client_context_t *cl, uwsd_http_state_t state)
 {
 	/* Free previous request data */
-	while (cl->http_num_headers > 0) {
-		cl->http_num_headers--;
-		free(cl->http_headers[cl->http_num_headers].name);
-		free(cl->http_headers[cl->http_num_headers].value);
-	}
+	while (cl->http_num_headers > 0)
+		free(cl->http_headers[--cl->http_num_headers].name);
 
 	free(cl->http_headers);
 	free(cl->request_uri);
@@ -119,7 +116,7 @@ http_header_parse(uwsd_client_context_t *cl, char *line, size_t len, bool essent
 	char *name, *value, *p, *e = line + len;
 	uwsd_http_header_t *hdr = NULL;
 	bool continuation;
-	size_t i;
+	size_t i, j;
 
 	/* Is a header line continuation? */
 	if (*line == ' ' || *line == '\t') {
@@ -179,20 +176,25 @@ http_header_parse(uwsd_client_context_t *cl, char *line, size_t len, bool essent
 
 	/* If new header, set value... */
 	if (!hdr->value) {
-		hdr->value = xalloc((e - value) + 1);
+		i = strlen(hdr->name);
+		hdr->name = xrealloc(hdr->name, i + 1 + (e - value) + 1);
+		hdr->value = hdr->name + i + 1;
 		memcpy(hdr->value, value, e - value);
+		hdr->value[e - value] = '\0';
 	}
 	/* ... otherwise append */
 	else {
-		i = strlen(hdr->value);
-		hdr->value = xrealloc(hdr->value, i + (e - value) + 2 + !continuation);
+		i = strlen(hdr->name);
+		j = strlen(hdr->value);
+		hdr->name = xrealloc(hdr->name, i + 1 + j + 2 + !continuation);
+		hdr->value = hdr->name + i + 1;
 
 		if (!continuation)
-			hdr->value[i++] = ',';
+			hdr->value[j++] = ',';
 
-		hdr->value[i++] = ' ';
-		memcpy(hdr->value + i, value, e - value);
-		hdr->value[i + (e - value)] = '\0';
+		hdr->value[j++] = ' ';
+		memcpy(hdr->value + j, value, e - value);
+		hdr->value[j + (e - value)] = '\0';
 	}
 
 	return true;
