@@ -965,15 +965,15 @@ uwsd_http_reply_buffer_varg(char *buf, size_t buflen, double http_version,
 
 	va_copy(ap1, ap);
 
-	clen = (*fmt != '\127') ? vsnprintf(NULL, 0, fmt, ap) : 0;
+	clen = (*fmt != '\127') ? vsnprintf(NULL, 0, fmt, ap1) : 0;
 
 	while (true) {
-		hname = va_arg(ap, char *);
+		hname = va_arg(ap1, char *);
 
 		if (!hname)
 			break;
 
-		hvalue = va_arg(ap, char *);
+		hvalue = va_arg(ap1, char *);
 
 		if (hvalue) {
 			len = snprintf(pos, buflen, "%s: %s\r\n", hname, hvalue);
@@ -997,10 +997,10 @@ uwsd_http_reply_buffer_varg(char *buf, size_t buflen, double http_version,
 		buflen -= len;
 
 		va_copy(ap1, ap);
-		len = vsnprintf(pos, buflen, fmt, ap);
+		len = vsnprintf(pos, buflen, fmt, ap1);
 		pos += len;
 		buflen -= len;
-		va_end(ap);
+		va_end(ap1);
 	}
 	else {
 		len = snprintf(pos, buflen, "\r\n");
