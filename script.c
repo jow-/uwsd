@@ -429,6 +429,8 @@ script_conn_close(script_connection_t *conn, uint16_t code, const char *msg)
 	uloop_fd_delete(&conn->ufd);
 	list_del(&conn->list);
 
+	close(conn->ufd.fd);
+
 	free(conn);
 }
 
@@ -740,7 +742,6 @@ uc_script_reply(uc_vm_t *vm, size_t nargs)
 		n -= wlen;
 	}
 
-	close((*conn)->ufd.fd);
 	printbuf_free(buf);
 
 	*conn = NULL;
@@ -952,7 +953,16 @@ handle_request(struct uloop_fd *ufd, unsigned int events)
 			if (errno == EINTR)
 				continue;
 
-			return uwsd_log_err(NULL, "Internal receive error: %m");
+			uwsd_log_err(NULL, "Internal receive error: %m");
+
+			return;
+		}
+
+		if (rlen == 0) {
+			uwsd_log_warn(NULL, "Backend connection closed by peer");
+			script_conn_close(conn, 0, NULL);
+
+			return;
 		}
 
 		break;
