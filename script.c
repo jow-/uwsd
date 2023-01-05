@@ -238,83 +238,18 @@ ws_error_send(script_connection_t *conn, bool terminate, uint16_t code, const ch
 }
 
 static void
-http_reply_start(script_connection_t *conn, uint16_t code, const char *reason)
-{
-	double http_version = ucv_double_get(ucv_object_get(conn->req, "http_version", NULL));
-
-	//uwsd_http_info(cl, "R %03hu %s", code, reason ? reason : "-");
-
-	conn->buf.datalen = snprintf((char *)conn->buf.data, sizeof(conn->buf.data),
-		"HTTP/%.1f %hu %s\r\n", http_version, code, reason);
-}
-
-static void
-http_reply_header(script_connection_t *conn, const char *name, const char *value)
-{
-	conn->buf.datalen += snprintf(
-		(char *)conn->buf.data + conn->buf.datalen,
-		sizeof(conn->buf.data) - conn->buf.datalen,
-		"%s: %s\r\n", name, value);
-}
-
-static void
-http_reply_finish_v(script_connection_t *conn, const char *ctype, const char *msg, va_list ap)
-{
-	uc_value_t *method = ucv_object_get(conn->req, "request_method", NULL);
-	va_list ap1;
-
-	if (msg && strcmp(ucv_string_get(method), "HEAD")) {
-		va_copy(ap1, ap);
-		conn->buf.datalen += snprintf(
-			(char *)conn->buf.data + conn->buf.datalen,
-			sizeof(conn->buf.data) - conn->buf.datalen,
-			"Content-Type: %s\r\n"
-			"Content-Length: %d\r\n\r\n",
-			ctype ? ctype : "text/plain",
-			vsnprintf("", 0, msg, ap1)
-		);
-		va_end(ap1);
-
-		va_copy(ap1, ap);
-		conn->buf.datalen += vsnprintf(
-			(char *)conn->buf.data + conn->buf.datalen,
-			sizeof(conn->buf.data) - conn->buf.datalen,
-			msg, ap1);
-		va_end(ap1);
-	}
-	else {
-		conn->buf.datalen += snprintf(
-			(char *)conn->buf.data + conn->buf.datalen,
-			sizeof(conn->buf.data) - conn->buf.datalen,
-			"\r\n");
-	}
-
-	send(conn->ufd.fd, conn->buf.data, conn->buf.datalen, 0);
-}
-
-static void
-http_reply_finish(script_connection_t *conn, const char *ctype, const char *msg, ...)
+http_reply_send(script_connection_t *conn, uint16_t code, const char *reason, const char *msg, ...)
 {
 	va_list ap;
+	size_t len;
 
 	va_start(ap, msg);
-	http_reply_finish_v(conn, ctype, msg, ap);
-	va_end(ap);
-}
-
-static void
-http_error_send(script_connection_t *conn, bool terminate, uint16_t code, const char *reason, const char *msg, ...)
-{
-	va_list ap;
-
-	va_start(ap, msg);
-	http_reply_start(conn, code, reason);
-	http_reply_header(conn, "Connection", "close");
-	http_reply_finish_v(conn, "text/plain", msg, ap);
+	len = uwsd_http_reply_buffer_varg((char *)conn->buf.data, sizeof(conn->buf.data),
+		ucv_double_get(ucv_object_get(conn->req, "http_version", NULL)),
+		code, reason, msg, ap);
 	va_end(ap);
 
-	if (terminate)
-		script_conn_close(conn, 0, NULL);
+	send(conn->ufd.fd, conn->buf.data, len, 0);
 }
 
 
@@ -375,10 +310,16 @@ script_conn_ws_handshake(script_connection_t *conn, const char *acceptkey)
 		if (ex != EXCEPTION_NONE) {
 			ctx = ucv_object_get(ucv_array_get(vm->exception.stacktrace, 0), "context", NULL);
 
-			http_error_send(conn, true, 500, "Internal Server Error",
+			http_reply_send(conn,
+				500, "Internal Server Error",
 				"Exception in onConnect(): %s\n%s",
 					vm->exception.message,
-					ucv_string_get(ctx));
+					ucv_string_get(ctx),
+				"Connection", "close",
+				UWSD_HTTP_REPLY_EOH
+			);
+
+			script_conn_close(conn, 0, NULL);
 
 			return false;
 		}
@@ -386,8 +327,14 @@ script_conn_ws_handshake(script_connection_t *conn, const char *acceptkey)
 		ucv_put(uc_vm_stack_pop(vm));
 
 		if (!conn->proto) {
-			http_error_send(conn, true, 500, "Internal Server Error",
-				"The onConnect() handler did not accept the connection\n");
+			http_reply_send(conn,
+				500, "Internal Server Error",
+				"The onConnect() handler did not accept the connection\n",
+				"Connection", "close",
+				UWSD_HTTP_REPLY_EOH
+			);
+
+			script_conn_close(conn, 0, NULL);
 
 			return false;
 		}
@@ -396,15 +343,15 @@ script_conn_ws_handshake(script_connection_t *conn, const char *acceptkey)
 			ucv_clear(&conn->proto);
 	}
 
-	http_reply_start(conn, 101, "Switching Protocols");
-	http_reply_header(conn, "Upgrade", "WebSocket");
-	http_reply_header(conn, "Connection", "Upgrade");
-	http_reply_header(conn, "Sec-WebSocket-Accept", acceptkey);
-
-	if (conn->proto)
-		http_reply_header(conn, "Sec-WebSocket-Protocol", ucv_string_get(conn->proto));
-
-	http_reply_finish(conn, NULL, NULL);
+	http_reply_send(conn,
+		101, "Switching Protocols",
+		UWSD_HTTP_REPLY_EMPTY,
+		"Upgrade", "WebSocket",
+		"Connection", "Upgrade",
+		"Sec-WebSocket-Accept", acceptkey,
+		"Sec-WebSocket-Protocol", ucv_string_get(conn->proto),
+		UWSD_HTTP_REPLY_EOH
+	);
 
 	return true;
 }
@@ -510,10 +457,16 @@ script_conn_http_request(script_connection_t *conn)
 		if (ex != EXCEPTION_NONE) {
 			ctx = ucv_object_get(ucv_array_get(vm->exception.stacktrace, 0), "context", NULL);
 
-			http_error_send(conn, true, 500, "Internal Server Error",
+			http_reply_send(conn,
+				500, "Internal Server Error",
 				"Exception in onRequest(): %s\n%s",
 					vm->exception.message,
-					ucv_string_get(ctx));
+					ucv_string_get(ctx),
+				"Connection", "close",
+				UWSD_HTTP_REPLY_EOH
+			);
+
+			script_conn_close(conn, 0, NULL);
 
 			return false;
 		}
@@ -521,8 +474,14 @@ script_conn_http_request(script_connection_t *conn)
 		ucv_put(uc_vm_stack_pop(vm));
 	}
 	else {
-		http_error_send(conn, true, 501, "Not Implemented",
-			"Backend script does not implement an onRequest() handler.\n");
+		http_reply_send(conn,
+			501, "Not Implemented",
+			"Backend script does not implement an onRequest() handler.\n",
+			"Connection", "close",
+			UWSD_HTTP_REPLY_EOH
+		);
+
+		script_conn_close(conn, 0, NULL);
 
 		return false;
 	}
@@ -549,10 +508,16 @@ script_conn_http_body(script_connection_t *conn, const void *data, size_t len)
 	if (ex != EXCEPTION_NONE) {
 		ctx = ucv_object_get(ucv_array_get(vm->exception.stacktrace, 0), "context", NULL);
 
-		http_error_send(conn, true, 500, "Internal Server Error",
+		http_reply_send(conn,
+			500, "Internal Server Error",
 			"Exception in onBody(): %s\n%s",
 				vm->exception.message,
-				ucv_string_get(ctx));
+				ucv_string_get(ctx),
+			"Connection", "close",
+			UWSD_HTTP_REPLY_EOH
+		);
+
+		script_conn_close(conn, 0, NULL);
 
 		return false;
 	}

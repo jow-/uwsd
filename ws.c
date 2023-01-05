@@ -560,20 +560,17 @@ uwsd_ws_state_upstream_connected(uwsd_client_context_t *cl, uwsd_connection_stat
 	}
 	else {
 		/* Format handshake reply */
-		uwsd_http_reply_start(cl, 101, "Switching Protocols");
-		uwsd_http_reply_header(cl, "Upgrade", "WebSocket");
-		uwsd_http_reply_header(cl, "Connection", "Upgrade");
-		uwsd_http_reply_header(cl, "Sec-WebSocket-Accept", digest);
-
-		/* NB: We could probably do better here and reject the handshake if the
-		 * configured subprotocol does not match the client proposal, however I
-		 * couldn't figure out a best practice to do so. Simply reply with our
-		 * statically configured subprotocol (or none at all) and let the client
-		 * deal with it. */
-		if (cl->action->data.proxy.subprotocol)
-			uwsd_http_reply_header(cl, "Sec-WebSocket-Protocol", cl->action->data.proxy.subprotocol);
-
-		uwsd_http_reply_finish(cl, NULL);
+		uwsd_http_reply(cl, 101, "Switching Protocols", UWSD_HTTP_REPLY_EMPTY,
+			"Upgrade", "WebSocket",
+			"Connection", "Upgrade",
+			"Sec-WebSocket-Accept", digest,
+			/* NB: We could probably do better here and reject the handshake if the
+			 * configured subprotocol does not match the client proposal, however I
+			 * couldn't figure out a best practice to do so. Simply reply with our
+			 * statically configured subprotocol (or none at all) and let the client
+			 * deal with it. */
+			"Sec-WebSocket-Protocol", cl->action->data.proxy.subprotocol,
+			UWSD_HTTP_REPLY_EOH);
 
 		/* Send handshake reply */
 		cl->rxbuf.pos = cl->rxbuf.end;

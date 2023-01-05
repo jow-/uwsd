@@ -92,8 +92,9 @@ uwsd_file_if_match(uwsd_client_context_t *cl, struct stat *s)
 	    uwsd_http_header_contains(cl, "If-Match", uwsd_file_mktag(s)))
 		return true;
 
-	uwsd_http_reply_start(cl, 412, "Precondition Failed");
-	uwsd_http_reply_finish(cl, NULL);
+	uwsd_http_reply(cl, 412, "Precondition Failed",
+		UWSD_HTTP_REPLY_EMPTY,
+		UWSD_HTTP_REPLY_EOH);
 
 	return false;
 }
@@ -107,10 +108,11 @@ uwsd_file_if_modified_since(uwsd_client_context_t *cl, struct stat *s)
 		return true;
 
 	if (uwsd_file_date2unix(hdr) >= s->st_mtime) {
-		uwsd_http_reply_start(cl, 304, "Not Modified");
-		uwsd_http_reply_header(cl, "ETag", uwsd_file_mktag(s));
-		uwsd_http_reply_header(cl, "Last-Modified", uwsd_file_unix2date(s->st_mtime));
-		uwsd_http_reply_finish(cl, NULL);
+		uwsd_http_reply(cl, 304, "Not Modified",
+			UWSD_HTTP_REPLY_EMPTY,
+			"ETag", uwsd_file_mktag(s),
+			"Last-Modified", uwsd_file_unix2date(s->st_mtime),
+			UWSD_HTTP_REPLY_EOH);
 
 		return false;
 	}
@@ -126,14 +128,16 @@ uwsd_file_if_none_match(uwsd_client_context_t *cl, struct stat *s)
 	if (uwsd_http_header_contains(cl, "If-None-Match", "*") ||
 	    uwsd_http_header_contains(cl, "If-None-Match", tag)) {
 		if (cl->request_method == HTTP_GET || cl->request_method == HTTP_HEAD) {
-			uwsd_http_reply_start(cl, 304, "Not Modified");
-			uwsd_http_reply_header(cl, "ETag", tag);
-			uwsd_http_reply_header(cl, "Last-Modified", uwsd_file_unix2date(s->st_mtime));
-			uwsd_http_reply_finish(cl, NULL);
+			uwsd_http_reply(cl, 304, "Not Modified",
+				UWSD_HTTP_REPLY_EMPTY,
+				"ETag", tag,
+				"Last-Modified", uwsd_file_unix2date(s->st_mtime),
+				UWSD_HTTP_REPLY_EOH);
 		}
 		else {
-			uwsd_http_reply_start(cl, 412, "Precondition Failed");
-			uwsd_http_reply_finish(cl, NULL);
+		uwsd_http_reply(cl, 412, "Precondition Failed",
+			UWSD_HTTP_REPLY_EMPTY,
+			UWSD_HTTP_REPLY_EOH);
 		}
 
 		return false;
@@ -148,8 +152,9 @@ uwsd_file_if_range(uwsd_client_context_t *cl, struct stat *s)
 	char *hdr = uwsd_http_header_lookup(cl, "If-Range");
 
 	if (hdr) {
-		uwsd_http_reply_start(cl, 412, "Precondition Failed");
-		uwsd_http_reply_finish(cl, NULL);
+		uwsd_http_reply(cl, 412, "Precondition Failed",
+			UWSD_HTTP_REPLY_EMPTY,
+			UWSD_HTTP_REPLY_EOH);
 
 		return false;
 	}
@@ -163,8 +168,9 @@ uwsd_file_if_unmodified_since(uwsd_client_context_t *cl, struct stat *s)
 	char *hdr = uwsd_http_header_lookup(cl, "If-Unmodified-Since");
 
 	if (hdr && uwsd_file_date2unix(hdr) <= s->st_mtime) {
-		uwsd_http_reply_start(cl, 412, "Precondition Failed");
-		uwsd_http_reply_finish(cl, NULL);
+		uwsd_http_reply(cl, 412, "Precondition Failed",
+			UWSD_HTTP_REPLY_EMPTY,
+			UWSD_HTTP_REPLY_EOH);
 
 		return false;
 	}

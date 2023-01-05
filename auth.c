@@ -133,9 +133,11 @@ check_basic(uwsd_auth_t *auth, uwsd_client_context_t *cl)
 fail:
 	hdr = auth_www_authenticate_hdr(auth->data.basic.realm);
 
-	uwsd_http_reply_start(cl, 401, "Unauthorized");
-	uwsd_http_reply_header(cl, "WWW-Authenticate", hdr);
-	uwsd_http_reply_finish(cl, "Login required\n");
+	uwsd_http_reply(cl, 401, "Unauthorized",
+		"Login required\n",
+		"WWW-Authenticate", hdr,
+		UWSD_HTTP_REPLY_EOH);
+
 	uwsd_http_reply_send(cl, true);
 
 	free(dec);
@@ -176,8 +178,10 @@ check_mtls(uwsd_auth_t *auth, uwsd_client_context_t *cl)
 	return true;
 
 fail:
-	uwsd_http_reply_start(cl, 403, "Forbidden");
-	uwsd_http_reply_finish(cl, "Peer certificate refused\n");
+	uwsd_http_reply(cl, 403, "Forbidden",
+		"Peer certificate refused\n",
+		UWSD_HTTP_REPLY_EOH);
+
 	uwsd_http_reply_send(cl, true);
 
 	return false;

@@ -110,6 +110,22 @@ http_state_reset(uwsd_client_context_t *cl, uwsd_http_state_t state)
 	http_state_transition(cl, state);
 }
 
+#define http_error(cl, code, reason, msg, ...)                        \
+	do {                                                              \
+		uwsd_http_reply(cl, code, reason, msg,                        \
+			##__VA_ARGS__,                                            \
+			"Connection", "close", UWSD_HTTP_REPLY_EOH);              \
+			                                                          \
+		if (uwsd_http_reply_send(cl, true))                           \
+			client_free(cl, "%hu (%s)", code, reason ? reason : "-"); \
+	} while(0)
+
+#define http_error_return(cl, ...)   \
+	do {                             \
+		http_error(cl, __VA_ARGS__); \
+		return false;                \
+	} while (0)
+
 static bool
 http_header_parse(uwsd_client_context_t *cl, char *line, size_t len, bool essential_only)
 {
@@ -200,12 +216,6 @@ http_header_parse(uwsd_client_context_t *cl, char *line, size_t len, bool essent
 	return true;
 }
 
-#define http_failure(cl, ...)					\
-	do {										\
-		uwsd_http_error_send(cl, __VA_ARGS__);	\
-		return false;							\
-	} while (0)
-
 static uint8_t
 hex(uint8_t byte)
 {
@@ -261,9 +271,7 @@ http_determine_message_length(uwsd_client_context_t *cl, bool request)
 		    strncasecmp(tenc + hlen - strlen("chunked"), "chunked", strlen("chunked")) ||
 		    (hlen > strlen("chunked") && !strchr(", \r\t\n", tenc[hlen - strlen("chunked") - 1])))
 		{
-			uwsd_http_error_send(cl, 400, "Bad Request", "Invalid transfer encoding");
-
-			return false;
+			http_error_return(cl, 400, "Bad Request", "Invalid transfer encoding\n");
 		}
 
 		http_state_transition(cl, STATE_HTTP_CHUNK_HEADER);
@@ -271,11 +279,8 @@ http_determine_message_length(uwsd_client_context_t *cl, bool request)
 	else if (clen) {
 		hlen = strtoull(clen, &e, 10);
 
-		if (e == clen || *e != '\0') {
-			uwsd_http_error_send(cl, 400, "Bad Request", "Invalid content length");
-
-			return false;
-		}
+		if (e == clen || *e != '\0')
+			http_error_return(cl, 400, "Bad Request", "Invalid content length\n");
 
 		cl->request_length = hlen;
 		http_state_transition(cl, STATE_HTTP_BODY_KNOWN_LENGTH);
@@ -520,7 +525,7 @@ http_request_recv(uwsd_client_context_t *cl)
 
 	if (cl->rxbuf.pos == cl->rxbuf.end) {
 		if (cl->rxbuf.end == cl->rxbuf.data + sizeof(cl->rxbuf.data))
-			http_failure(cl, 431, "Request Header Fields Too Large", "Request header too long");
+			http_error_return(cl, 431, "Request Header Fields Too Large", "Request header too long");
 
 		rlen = client_recv(&cl->downstream, cl->rxbuf.end,
 			cl->rxbuf.data + sizeof(cl->rxbuf.data) - cl->rxbuf.end);
@@ -555,14 +560,14 @@ http_request_recv(uwsd_client_context_t *cl)
 				}
 
 				if (i == ARRAY_SIZE(http_request_methods))
-					http_failure(cl, 501, "Not Implemented", "Unsupported request method");
+					http_error_return(cl, 501, "Not Implemented", "Unsupported request method");
 
 				http_state_transition(cl, STATE_HTTP_REQUEST_URI);
 				cl->txbuf.pos = cl->txbuf.data;
 			}
 			else {
 				if (len >= strlen("CONNECT"))
-					http_failure(cl, 501, "Not Implemented", "Unsupported request method");
+					http_error_return(cl, 501, "Not Implemented", "Unsupported request method");
 
 				*cl->txbuf.pos++ = *off;
 			}
@@ -576,7 +581,7 @@ http_request_recv(uwsd_client_context_t *cl)
 				cl->request_uri = strndup((char *)cl->txbuf.data, len);
 
 				if (!cl->request_uri)
-					http_failure(cl, 500, "Internal Server Error", "Out of memory");
+					http_error_return(cl, 500, "Internal Server Error", "Out of memory");
 
 				http_state_transition(cl, STATE_HTTP_REQUEST_VERSION);
 				cl->txbuf.pos = cl->txbuf.data;
@@ -586,7 +591,7 @@ http_request_recv(uwsd_client_context_t *cl)
 					continue;
 
 				if (len >= sizeof(cl->txbuf.data))
-					http_failure(cl, 414, "URI Too Long", "The reqested URI is too long");
+					http_error_return(cl, 414, "URI Too Long", "The reqested URI is too long");
 
 				*cl->txbuf.pos++ = *off;
 			}
@@ -602,7 +607,7 @@ http_request_recv(uwsd_client_context_t *cl)
 				else if (len == 8 && !strncmp((char *)cl->txbuf.data, "HTTP/1.1", 8))
 					cl->http_version = 0x0101;
 				else
-					http_failure(cl, 505, "HTTP Version Not Supported", "Requested protocol version not implemented");
+					http_error_return(cl, 505, "HTTP Version Not Supported", "Requested protocol version not implemented");
 
 				uwsd_http_info(cl, "> %s %s",
 					http_request_methods[cl->request_method].name,
@@ -616,7 +621,7 @@ http_request_recv(uwsd_client_context_t *cl)
 					continue;
 
 				if (len >= strlen("HTTP/1.1"))
-					http_failure(cl, 505, "HTTP Version Not Supported", "Requested protocol version not implemented");
+					http_error_return(cl, 505, "HTTP Version Not Supported", "Requested protocol version not implemented");
 
 				*cl->txbuf.pos++ = *off;
 			}
@@ -627,7 +632,7 @@ http_request_recv(uwsd_client_context_t *cl)
 			if (*off == '\n')
 				http_state_transition(cl, STATE_HTTP_HEADERLINE);
 			else
-				http_failure(cl, 400, "Bad Request", "Invalid request line");
+				http_error_return(cl, 400, "Bad Request", "Invalid request line");
 
 			break;
 
@@ -637,7 +642,7 @@ http_request_recv(uwsd_client_context_t *cl)
 			}
 			else {
 				if (len >= sizeof(cl->txbuf.data))
-					http_failure(cl, 431, "Request Header Fields Too Large", "Request header line too long");
+					http_error_return(cl, 431, "Request Header Fields Too Large", "Request header line too long");
 
 				*cl->txbuf.pos++ = *off;
 			}
@@ -648,7 +653,7 @@ http_request_recv(uwsd_client_context_t *cl)
 			if (*off == '\n') {
 				if (len) {
 					if (!http_header_parse(cl, (char *)cl->txbuf.data, len, false))
-						http_failure(cl, 400, "Bad Request", "Invalid header line");
+						http_error_return(cl, 400, "Bad Request", "Invalid header line");
 
 					http_state_transition(cl, STATE_HTTP_HEADERLINE);
 					cl->txbuf.pos = cl->txbuf.data;
@@ -661,7 +666,7 @@ http_request_recv(uwsd_client_context_t *cl)
 				}
 			}
 			else {
-				http_failure(cl, 400, "Bad Request", "Invalid header line");
+				http_error_return(cl, 400, "Bad Request", "Invalid header line");
 			}
 
 			break;
@@ -685,7 +690,7 @@ http_response_recv(uwsd_client_context_t *cl)
 		rlen = client_recv(&cl->upstream, cl->rxbuf.data, sizeof(cl->rxbuf.data));
 
 		if (rlen == -1)
-			http_failure(cl, 502, "Bad Gateway",
+			http_error_return(cl, 502, "Bad Gateway",
 				"Upstream receive error: %s", strerror(errno));
 
 		if (rlen == 0) {
@@ -724,7 +729,7 @@ http_response_recv(uwsd_client_context_t *cl)
 				else if (len == 8 && !strncmp((char *)cl->txbuf.data, "HTTP/1.1", 8))
 					cl->http_version = 0x0101;
 				else
-					http_failure(cl, 502, "Bad Gateway",
+					http_error_return(cl, 502, "Bad Gateway",
 						"Upstream response uses unsupported HTTP protocol version");
 
 				http_state_transition(cl, STATE_HTTP_STATUS_CODE);
@@ -735,7 +740,7 @@ http_response_recv(uwsd_client_context_t *cl)
 					continue;
 
 				if (len >= strlen("HTTP/1.1"))
-					http_failure(cl, 502, "Bad Gateway",
+					http_error_return(cl, 502, "Bad Gateway",
 						"Upstream response uses unsupported HTTP protocol version");
 
 				*cl->txbuf.pos++ = *off;
@@ -753,7 +758,7 @@ http_response_recv(uwsd_client_context_t *cl)
 					continue;
 
 				if (len >= 3 || !isdigit(*off))
-					http_failure(cl, 502, "Bad Gateway",
+					http_error_return(cl, 502, "Bad Gateway",
 						"Upstream response contains invalid status code");
 
 				cl->http_status = cl->http_status * 10 + (*off - '0');
@@ -769,7 +774,7 @@ http_response_recv(uwsd_client_context_t *cl)
 				cl->request_uri = strndup((char *)cl->txbuf.data, len);
 
 				if (!cl->request_uri)
-					http_failure(cl, 500, "Internal Server Error", "Out of memory");
+					http_error_return(cl, 500, "Internal Server Error", "Out of memory");
 
 				http_state_transition(cl, STATE_HTTP_STATUSLINE_LF);
 				cl->txbuf.pos = cl->txbuf.data;
@@ -779,7 +784,7 @@ http_response_recv(uwsd_client_context_t *cl)
 					continue;
 
 				if (len >= sizeof(cl->txbuf.data))
-					http_failure(cl, 502, "Bad Gateway",
+					http_error_return(cl, 502, "Bad Gateway",
 						"Upstream response contains too long status message");
 
 				*cl->txbuf.pos++ = *off;
@@ -793,7 +798,7 @@ http_response_recv(uwsd_client_context_t *cl)
 				http_state_transition(cl, STATE_HTTP_HEADERLINE);
 			}
 			else
-				http_failure(cl, 502, "Bad Gateway",
+				http_error_return(cl, 502, "Bad Gateway",
 					"Upstream response contains invalid HTTP status line");
 
 			break;
@@ -804,7 +809,7 @@ http_response_recv(uwsd_client_context_t *cl)
 			}
 			else {
 				if (len >= sizeof(cl->txbuf.data))
-					http_failure(cl, 502, "Bad Gateway",
+					http_error_return(cl, 502, "Bad Gateway",
 						"Upstream response contains too long header line");
 
 				*cl->txbuf.pos++ = *off;
@@ -826,7 +831,7 @@ http_response_recv(uwsd_client_context_t *cl)
 				}
 			}
 			else {
-				http_failure(cl, 502, "Bad Gateway",
+				http_error_return(cl, 502, "Bad Gateway",
 					"Upstream response contains invalid header line");
 			}
 
@@ -892,63 +897,6 @@ uwsd_http_header_contains(uwsd_client_context_t *cl, const char *name, const cha
 	return false;
 }
 
-__hidden void
-uwsd_http_reply_start(uwsd_client_context_t *cl, uint16_t code, const char *reason)
-{
-	size_t len;
-
-	uwsd_http_info(cl, "R %03hu %s", code, reason ? reason : "-");
-
-	len = snprintf((char *)cl->rxbuf.data, sizeof(cl->rxbuf.data),
-		"HTTP/%hu.%hu %hu %s\r\n",
-		cl->http_version >> 8,
-		cl->http_version & 0xff,
-		code, reason
-	);
-
-	cl->rxbuf.pos = cl->rxbuf.data;
-	cl->rxbuf.end = cl->rxbuf.pos + len;
-}
-
-__hidden void
-uwsd_http_reply_header(uwsd_client_context_t *cl, const char *name, const char *value)
-{
-	size_t len;
-
-	len = snprintf((char *)cl->rxbuf.end, cl->rxbuf.data + sizeof(cl->rxbuf.data) - cl->rxbuf.end,
-		"%s: %s\r\n", name, value);
-
-	cl->rxbuf.end += len;
-}
-
-__hidden void
-uwsd_http_reply_finish(uwsd_client_context_t *cl, const char *msg, ...)
-{
-	va_list ap;
-
-	if (msg && cl->request_method != HTTP_HEAD) {
-		va_start(ap, msg);
-		cl->rxbuf.end += snprintf((char *)cl->rxbuf.end,
-			cl->rxbuf.data + sizeof(cl->rxbuf.data) - cl->rxbuf.end,
-			"Content-Type: text/plain\r\n"
-			"Content-Length: %d\r\n\r\n",
-			vsnprintf("", 0, msg, ap)
-		);
-		va_end(ap);
-
-		va_start(ap, msg);
-		cl->rxbuf.end += vsnprintf((char *)cl->rxbuf.end,
-			cl->rxbuf.data + sizeof(cl->rxbuf.data) - cl->rxbuf.end,
-			msg, ap);
-		va_end(ap);
-	}
-	else {
-		cl->rxbuf.end += snprintf((char *)cl->rxbuf.end,
-			cl->rxbuf.data + sizeof(cl->rxbuf.data) - cl->rxbuf.end,
-			"\r\n");
-	}
-}
-
 __hidden bool
 uwsd_http_reply_send(uwsd_client_context_t *cl, bool error)
 {
@@ -980,6 +928,89 @@ uwsd_http_reply_send(uwsd_client_context_t *cl, bool error)
 	return true;
 }
 
+__hidden size_t __attribute__((__format__ (__printf__, 4, 0)))
+uwsd_http_reply(uwsd_client_context_t *cl, uint16_t code,
+                const char *reason, const char *msg, ...)
+{
+	va_list ap;
+	size_t len;
+
+	uwsd_http_info(cl, "%c %03hu %s", (code < 400) ? 'R' : 'E', code, reason ? reason : "-");
+
+	va_start(ap, msg);
+	len = uwsd_http_reply_buffer_varg(
+		(char *)cl->rxbuf.data, sizeof(cl->rxbuf.data),
+		cl->http_version == 0x0101 ? 1.1 : 1.0,
+		code, reason, msg ? msg : "\127", ap);
+	va_end(ap);
+
+	cl->rxbuf.pos = cl->rxbuf.data;
+	cl->rxbuf.end = cl->rxbuf.pos + len;
+
+	return len;
+}
+
+__hidden size_t __attribute__((__format__ (__printf__, 6, 0)))
+uwsd_http_reply_buffer_varg(char *buf, size_t buflen, double http_version,
+                            uint16_t code, const char *reason, const char *fmt, va_list ap)
+{
+	char *pos = buf, *hname, *hvalue;
+	bool has_ctype = false;
+	int len, clen;
+	va_list ap1;
+
+	len = snprintf(pos, buflen, "HTTP/%.1f %hu %s\r\n", http_version, code, reason);
+	pos += len;
+	buflen -= len;
+
+	va_copy(ap1, ap);
+
+	clen = (*fmt != '\127') ? vsnprintf(NULL, 0, fmt, ap) : 0;
+
+	while (true) {
+		hname = va_arg(ap, char *);
+
+		if (!hname)
+			break;
+
+		hvalue = va_arg(ap, char *);
+
+		if (hvalue) {
+			len = snprintf(pos, buflen, "%s: %s\r\n", hname, hvalue);
+			pos += len;
+			buflen -= len;
+			has_ctype |= !strcasecmp(hname, "Content-Type");
+		}
+	}
+
+	va_end(ap1);
+
+	if (*fmt != '\127') {
+		if (!has_ctype) {
+			len = snprintf(pos, buflen, "Content-Type: text/plain\r\n");
+			pos += len;
+			buflen -= len;
+		}
+
+		len = snprintf(pos, buflen, "Content-Length: %d\r\n\r\n", clen);
+		pos += len;
+		buflen -= len;
+
+		va_copy(ap1, ap);
+		len = vsnprintf(pos, buflen, fmt, ap);
+		pos += len;
+		buflen -= len;
+		va_end(ap);
+	}
+	else {
+		len = snprintf(pos, buflen, "\r\n");
+		pos += len;
+		buflen -= len;
+	}
+
+	return pos - buf;
+}
+
 __hidden void
 uwsd_http_error_send(uwsd_client_context_t *cl, uint16_t code, const char *reason, const char *msg, ...)
 {
@@ -988,6 +1019,8 @@ uwsd_http_error_send(uwsd_client_context_t *cl, uint16_t code, const char *reaso
 	size_t len;
 
 	uwsd_http_info(cl, "E %03hu %s", code, reason ? reason : "-");
+
+	va_start(ap, msg);
 
 	len = snprintf((char *)cl->rxbuf.data, sizeof(cl->rxbuf.data),
 		"HTTP/%hu.%hu %hu %s\r\n"
@@ -1160,13 +1193,9 @@ http_proxy_connect(uwsd_client_context_t *cl)
 			action->data.proxy.hostname,
 			usock_port(action->data.proxy.port));
 
-		if (cl->upstream.ufd.fd == -1) {
-			uwsd_http_error_send(cl, 502, "Bad Gateway",
-				"Unable to connect to upstream server: %s",
-				strerror(errno));
-
-			return false;
-		}
+		if (cl->upstream.ufd.fd == -1)
+			http_error_return(cl, 502, "Bad Gateway",
+				"Unable to connect to upstream server: %m\n");
 	}
 
 	uwsd_state_transition(cl, STATE_CONN_UPSTREAM_CONNECT);
@@ -1181,12 +1210,9 @@ http_file_serve(uwsd_client_context_t *cl)
 	char *path = determine_path(cl);
 	struct stat s;
 
-	if (cl->request_method != HTTP_GET && cl->request_method != HTTP_HEAD) {
-		uwsd_http_error_send(cl, 405, "Method Not Allowed",
+	if (cl->request_method != HTTP_GET && cl->request_method != HTTP_HEAD)
+		http_error_return(cl, 405, "Method Not Allowed",
 			"The used HTTP method is invalid for the requested resource\n");
-
-		return false;
-	}
 
 	if (path && stat(path, &s) == 0)
 		cl->upstream.ufd.fd = open(path, O_RDONLY);
@@ -1198,26 +1224,18 @@ http_file_serve(uwsd_client_context_t *cl)
 
 		switch (errno) {
 		case EACCES:
-			uwsd_http_error_send(cl, 403, "Permission Denied",
+			http_error_return(cl, 403, "Permission Denied",
 				"Access to the requested file is forbidden\n");
 
-			break;
-
 		case ENOENT:
-			uwsd_http_error_send(cl, 404, "Not Found",
+			http_error_return(cl, 404, "Not Found",
 				"The requested path does not exist on this server\n");
 
-			break;
-
 		default:
-			uwsd_http_error_send(cl, 500, "Internal Server Error",
+			http_error_return(cl, 500, "Internal Server Error",
 				"Unable to serve requested file: %s\n",
 				strerror(errno));
-
-			break;
 		}
-
-		return false;
 	}
 
 	if (uwsd_file_if_range(cl, &s) &&
@@ -1228,16 +1246,13 @@ http_file_serve(uwsd_client_context_t *cl)
 	{
 		snprintf(szbuf, sizeof(szbuf), "%zu", (size_t)s.st_size);
 
-		uwsd_http_reply_start(cl, 200, "OK");
-		uwsd_http_reply_header(cl, "Content-Type", uwsd_file_mime_lookup(path));
-		uwsd_http_reply_header(cl, "Content-Length", szbuf);
-		uwsd_http_reply_header(cl, "ETag", uwsd_file_mktag(&s));
-		uwsd_http_reply_header(cl, "Last-Modified", uwsd_file_unix2date(s.st_mtime));
-
-		if (uwsd_http_header_contains(cl, "Connection", "close"))
-			uwsd_http_reply_header(cl, "Connection", "close");
-
-		uwsd_http_reply_finish(cl, NULL);
+		uwsd_http_reply(cl, 200, "OK", UWSD_HTTP_REPLY_EMPTY,
+			"Content-Type", uwsd_file_mime_lookup(path),
+			"Content-Length", szbuf,
+			"ETag", uwsd_file_mktag(&s),
+			"Last-Modified", uwsd_file_unix2date(s.st_mtime),
+			"Connection", uwsd_http_header_contains(cl, "Connection", "close") ? "close" : NULL,
+			UWSD_HTTP_REPLY_EOH);
 	}
 
 	free(path);
@@ -1257,19 +1272,13 @@ http_script_connect(uwsd_client_context_t *cl)
 
 		cl->upstream.ufd.fd = socket(AF_UNIX, SOCK_STREAM, 0);
 
-		if (cl->upstream.ufd.fd == -1) {
-			uwsd_http_error_send(cl, 502, "Bad Gateway",
-				"Unable to spawn UNIX socket: %m");
+		if (cl->upstream.ufd.fd == -1)
+			http_error_return(cl, 502, "Bad Gateway",
+				"Unable to spawn UNIX socket: %m\n");
 
-			return false;
-		}
-
-		if (connect(cl->upstream.ufd.fd, sun, sizeof(*sun)) == -1 && errno != EINPROGRESS) {
-			uwsd_http_error_send(cl, 502, "Bad Gateway",
+		if (connect(cl->upstream.ufd.fd, sun, sizeof(*sun)) == -1 && errno != EINPROGRESS)
+			http_error_return(cl, 502, "Bad Gateway",
 				"Unable to connect to script worker: %m");
-
-			return false;
-		}
 	}
 
 	uwsd_state_transition(cl, STATE_CONN_UPSTREAM_CONNECT);
@@ -1364,11 +1373,10 @@ uwsd_http_state_request_header(uwsd_client_context_t *cl, uwsd_connection_state_
 		}
 	}
 	else {
-		uwsd_http_reply_start(cl, 404, "Not Found");
-		uwsd_http_reply_header(cl, "Content-Type", "text/plain");
-		uwsd_http_reply_finish(cl,
+		uwsd_http_reply(cl, 404, "Not Found",
 			"No matching endpoint for %s request to %s",
-			ws ? "WebSocket" : "HTTP", cl->request_uri);
+				ws ? "WebSocket" : "HTTP", cl->request_uri,
+			UWSD_HTTP_REPLY_EOH);
 
 		if (!uwsd_http_reply_send(cl, true))
 			return;
@@ -1502,7 +1510,7 @@ uwsd_http_state_response_sendfile(uwsd_client_context_t *cl, uwsd_connection_sta
 __hidden void
 uwsd_http_state_upstream_timeout(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
-	uwsd_http_error_send(cl, 504, "Gateway Timeout", "Timeout while connecting to upstream server");
+	http_error(cl, 504, "Gateway Timeout", "Timeout while connecting to upstream server");
 }
 
 __hidden void
@@ -1549,9 +1557,10 @@ uwsd_http_state_upstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t
 			if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
 				return;
 
-			return uwsd_http_error_send(cl, 502, "Bad Gateway",
-				"Error while sending request to upstream server: %s",
-				strerror(errno));
+			http_error(cl, 502, "Bad Gateway",
+				"Error while sending request to upstream server: %m\n");
+
+			return;
 		}
 
 		cl->rxbuf.sent += wlen;
