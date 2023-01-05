@@ -49,15 +49,17 @@ typedef struct {
 		char *file;
 		char *directory;
 		struct {
-			uc_vm_t vm;
-			uc_value_t *onConnect, *onData, *onClose;
-			uc_value_t *onRequest, *onBody;
+			struct uloop_timeout timeout;
+			struct uloop_process proc;
+			struct sockaddr_un sun;
+			char *path;
 		} script;
 		struct {
 			int connect_timeout, transfer_timeout, idle_timeout;
 			char *hostname;
 			uint16_t port;
 			bool binary;
+			char *subprotocol;
 		} proxy;
 	} data;
 } uwsd_action_t;

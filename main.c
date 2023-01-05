@@ -15,6 +15,7 @@
  */
 
 #include <stdbool.h>
+#include <stdlib.h>
 #include <getopt.h>
 
 #include "listen.h"
@@ -22,6 +23,7 @@
 #include "ssl.h"
 #include "config.h"
 #include "log.h"
+#include "script.h"
 
 
 static struct option uwsd_options[] = {
@@ -41,23 +43,57 @@ usage(void)
 	return 1;
 }
 
+static void
+executable_find(const char *arg0)
+{
+	char *s;
+
+#ifdef __linux__
+	s = realpath("/proc/self/exe", NULL);
+
+	if (s) {
+		setenv("UWSD_EXECUTABLE", s, 1);
+		free(s);
+
+		return;
+	}
+#endif
+
+	s = realpath(arg0 ? arg0 : "./uwsd", NULL);
+
+	uwsd_log_warn(NULL,
+		"Can't reliably determine executable, assuming '%s'",
+		s ? s : arg0);
+
+	setenv("UWSD_EXECUTABLE", s ? s : arg0, 1);
+	free(s);
+}
+
 int
 main(int argc, char **argv)
 {
+	char *worker_socket, *worker_script;
 	int opt, option_index = 0;
 	unsigned int channels = 0;
 
+	setvbuf(stderr, NULL, _IOLBF, 0);
+
+	worker_socket = getenv("UWSD_WORKER_SOCKET");
+	worker_script = getenv("UWSD_WORKER_SCRIPT");
+
+	if (worker_socket && worker_script)
+		return uwsd_script_worker_main(worker_socket, worker_script);
+
+	executable_find(argv[0]);
 	uloop_init();
 
+	/* First parse all flags except --config */
 	while (true) {
 		opt = getopt_long(argc, argv, "", uwsd_options, &option_index);
 
 		if (opt == 0) {
-			if (config)
-				fatal("Option --config must be given only once");
-
-			if (!uwsd_config_parse(optarg))
-				exit(1);
+			/* ignore */
+			continue;
 		}
 		else if (opt == 1) {
 			if (!strcmp(optarg, "debug"))
@@ -91,17 +127,35 @@ main(int argc, char **argv)
 		}
 	}
 
+	if (channels)
+		uwsd_logging_channels = channels;
+
+	/* Second parse --config */
+	optind = 1;
+	option_index = 0;
+
+	while (true) {
+		opt = getopt_long(argc, argv, "", uwsd_options, &option_index);
+
+		if (opt == 0) {
+			if (config)
+				fatal("Option --config must be given only once");
+
+			if (!uwsd_config_parse(optarg))
+				exit(1);
+		}
+		else if (opt == -1) {
+			break;
+		}
+	}
+
 	if (!config && !uwsd_config_parse("/etc/uwsd/uwsd.conf"))
 		exit(1);
 
 	if (list_empty(&config->listeners))
 		fatal("No listener defined in configuration, aborting");
 
-	if (channels)
-		uwsd_logging_channels = channels;
-
 	uloop_run();
-
 	client_free_all();
 
 	return 0;

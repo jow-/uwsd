@@ -232,6 +232,8 @@ static const config_block_t proxy_tcp_spec = {
 			offsetof(uwsd_action_t, data.proxy.idle_timeout), NULL, NULL },
 		{ "binary", BOOLEAN,
 			offsetof(uwsd_action_t, data.proxy.binary), NULL, NULL },
+		{ "subprotocol", STRING,
+			offsetof(uwsd_action_t, data.proxy.subprotocol), NULL, NULL },
 		{ 0 }
 	}
 };
@@ -250,6 +252,8 @@ static const config_block_t proxy_udp_spec = {
 			offsetof(uwsd_action_t, data.proxy.idle_timeout), NULL, NULL },
 		{ "binary", BOOLEAN,
 			offsetof(uwsd_action_t, data.proxy.binary), NULL, NULL },
+		{ "subprotocol", STRING,
+			offsetof(uwsd_action_t, data.proxy.subprotocol), NULL, NULL },
 		{ 0 }
 	}
 };
@@ -268,6 +272,8 @@ static const config_block_t proxy_unix_spec = {
 			offsetof(uwsd_action_t, data.proxy.idle_timeout), NULL, NULL },
 		{ "binary", BOOLEAN,
 			offsetof(uwsd_action_t, data.proxy.binary), NULL, NULL },
+		{ "subprotocol", STRING,
+			offsetof(uwsd_action_t, data.proxy.subprotocol), NULL, NULL },
 		{ 0 }
 	}
 };

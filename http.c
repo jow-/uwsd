@@ -1246,27 +1246,31 @@ http_file_serve(uwsd_client_context_t *cl)
 }
 
 static bool
-http_script_invoke(uwsd_client_context_t *cl)
+http_script_connect(uwsd_client_context_t *cl)
 {
-	int scriptpipe[2];
+	struct sockaddr_un *sun = &cl->action->data.script.sun;
 
-	if (pipe(scriptpipe) == -1) {
-		uwsd_http_error_send(cl, 500, "Internal Server Error",
-			"Unable to spawn pipe: %s", strerror(errno));
+	if (cl->upstream.ufd.fd == -1) {
+		uwsd_http_debug(cl, "connecting to script worker");
 
-		return false;
+		cl->upstream.ufd.fd = socket(AF_UNIX, SOCK_STREAM, 0);
+
+		if (cl->upstream.ufd.fd == -1) {
+			uwsd_http_error_send(cl, 502, "Bad Gateway",
+				"Unable to spawn UNIX socket: %m");
+
+			return false;
+		}
+
+		if (connect(cl->upstream.ufd.fd, sun, sizeof(*sun)) == -1 && errno != EINPROGRESS) {
+			uwsd_http_error_send(cl, 502, "Bad Gateway",
+				"Unable to connect to script worker: %m");
+
+			return false;
+		}
 	}
 
-	if (!uwsd_script_request(cl, scriptpipe[1])) {
-		close(scriptpipe[0]);
-		close(scriptpipe[1]);
-
-		return false;
-	}
-
-	cl->upstream.ufd.fd = scriptpipe[0];
-
-	uwsd_http_state_upstream_connected(cl, STATE_CONN_UPSTREAM_CONNECT, true);
+	uwsd_state_transition(cl, STATE_CONN_UPSTREAM_CONNECT);
 
 	return true;
 }
@@ -1352,7 +1356,7 @@ uwsd_http_state_request_header(uwsd_client_context_t *cl, uwsd_connection_state_
 					return;
 			}
 			else if (cl->action->type == UWSD_ACTION_SCRIPT) {
-				if (!http_script_invoke(cl))
+				if (!http_script_connect(cl))
 					return;
 			}
 		}
@@ -1502,6 +1506,10 @@ uwsd_http_state_upstream_timeout(uwsd_client_context_t *cl, uwsd_connection_stat
 __hidden void
 uwsd_http_state_upstream_connected(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
+	if (cl->action->type == UWSD_ACTION_SCRIPT)
+		if (!uwsd_script_request(cl, -1))
+			return;
+
 	/* request body partially buffered, flush out as well */
 	if (cl->rxbuf.pos < cl->rxbuf.end) {
 		if (cl->http.state == STATE_HTTP_BODY_KNOWN_LENGTH)
@@ -1520,8 +1528,9 @@ uwsd_http_state_upstream_connected(uwsd_client_context_t *cl, uwsd_connection_st
 
 	/* we use a oneway pipe towards the script and won't ever get write readyness,
 	 * so directly transition to upstream send callback */
-	if (cl->action->type == UWSD_ACTION_SCRIPT)
-		return uwsd_http_state_upstream_send(cl, STATE_CONN_UPSTREAM_SEND, true);
+	// XXX: FIXME
+	//if (cl->action->type == UWSD_ACTION_SCRIPT)
+	//	return uwsd_http_state_upstream_send(cl, STATE_CONN_UPSTREAM_SEND, true);
 
 	uwsd_state_transition(cl, STATE_CONN_UPSTREAM_SEND);
 }

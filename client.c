@@ -36,7 +36,7 @@
 static LIST_HEAD(clients);
 
 __hidden void
-client_create2(int fd, uwsd_listen_t *listen, struct sockaddr *peeraddr, size_t alen)
+client_create(int fd, uwsd_listen_t *listen, struct sockaddr *peeraddr, size_t alen)
 {
 	uwsd_client_context_t *cl = alloc_obj(uwsd_client_context_t);
 
@@ -52,7 +52,6 @@ client_create2(int fd, uwsd_listen_t *listen, struct sockaddr *peeraddr, size_t 
 
 	cl->downstream.ufd.fd = fd;
 	cl->upstream.ufd.fd = -1;
-	cl->script.fd = -1;
 
 	memcpy(&cl->sa.unspec, peeraddr, alen);
 
@@ -87,6 +86,8 @@ client_free(uwsd_client_context_t *cl, const char *reason, ...)
 	free(msg);
 #endif
 
+	uwsd_script_close(cl);
+
 	uloop_timeout_cancel(&cl->upstream.utm);
 	uloop_fd_delete(&cl->upstream.ufd);
 
@@ -102,13 +103,8 @@ client_free(uwsd_client_context_t *cl, const char *reason, ...)
 	if (cl->downstream.ssl)
 		uwsd_ssl_free(cl);
 
-	if (cl->script.fd != -1)
-		close(cl->script.fd);
-
 	list_for_each_entry_safe(e, tmp, &cl->ws.txq, list)
 		free(e);
-
-	uwsd_script_close(cl);
 
 	while (cl->http_num_headers > 0) {
 		cl->http_num_headers--;

@@ -267,10 +267,13 @@ ws_downstream_rx(uwsd_client_context_t *cl)
 				if (!ws_verify_frame(cl))
 					return false;
 
-				if (cl->ws.len)
-					ws_state_transition(cl, STATE_WS_PAYLOAD);
-				else
+				if (!cl->ws.len) {
 					ws_state_transition(cl, STATE_WS_COMPLETE);
+
+					return true;
+				}
+
+				ws_state_transition(cl, STATE_WS_PAYLOAD);
 			}
 
 			break;
@@ -335,6 +338,31 @@ send_iov(uwsd_connection_t *conn, struct iovec *iov, size_t len)
 	return false;
 }
 
+static bool
+ws_downstream_tx_iov(uwsd_client_context_t *cl, struct iovec *iov, size_t iolen)
+{
+	errno = 0;
+
+	if (!list_empty(&cl->ws.txq) || !send_iov(&cl->downstream, iov, iolen)) {
+		if (errno) {
+			ws_terminate(cl, STATUS_TERMINATED, "Peer send error: %s", strerror(errno));
+		}
+		else {
+			if (!list_empty(&cl->ws.txq))
+				uwsd_ws_debug(cl, "TX in progress (qlen %zu), delaying send...", cl->ws.txqlen);
+			else
+				uwsd_ws_debug(cl, "Partial TX, delaying sending remainder...");
+
+			ws_add_txq(cl, iov, iolen);
+			uwsd_state_transition(cl, STATE_CONN_WS_DOWNSTREAM_SEND);
+		}
+
+		return false;
+	}
+
+	return true;
+}
+
 /* One downstream TX operation */
 static bool
 ws_downstream_tx(uwsd_client_context_t *cl, uwsd_ws_opcode_t opcode, bool add_header, const void *data, size_t len)
@@ -381,22 +409,8 @@ ws_downstream_tx(uwsd_client_context_t *cl, uwsd_ws_opcode_t opcode, bool add_he
 
 	errno = 0;
 
-	if (!list_empty(&cl->ws.txq) || !send_iov(&cl->downstream, iov, iolen)) {
-		if (errno) {
-			ws_terminate(cl, STATUS_TERMINATED, "Peer send error: %s", strerror(errno));
-		}
-		else {
-			if (!list_empty(&cl->ws.txq))
-				uwsd_ws_debug(cl, "TX in progress (qlen %zu), delaying send...", cl->ws.txqlen);
-			else
-				uwsd_ws_debug(cl, "Partial TX, delaying sending remainder...");
-
-			ws_add_txq(cl, iov, iolen);
-			uwsd_state_transition(cl, STATE_CONN_WS_DOWNSTREAM_SEND);
-		}
-
+	if (!ws_downstream_tx_iov(cl, iov, iolen))
 		return false;
-	}
 
 	/* we completely sent a close message, tear down connection */
 	if (opcode == OPCODE_CLOSE) {
@@ -415,12 +429,40 @@ ws_downstream_tx(uwsd_client_context_t *cl, uwsd_ws_opcode_t opcode, bool add_he
 	return true;
 }
 
+static bool
+ws_script_connect(uwsd_client_context_t *cl)
+{
+	struct sockaddr_un *sun = &cl->action->data.script.sun;
+
+	if (cl->upstream.ufd.fd == -1) {
+		uwsd_http_debug(cl, "connecting to script worker");
+
+		cl->upstream.ufd.fd = socket(AF_UNIX, SOCK_STREAM, 0);
+
+		if (cl->upstream.ufd.fd == -1) {
+			uwsd_http_error_send(cl, 502, "Bad Gateway",
+				"Unable to spawn UNIX socket: %m");
+
+			return false;
+		}
+
+		if (connect(cl->upstream.ufd.fd, sun, sizeof(*sun)) == -1 && errno != EINPROGRESS) {
+			uwsd_http_error_send(cl, 502, "Bad Gateway",
+				"Unable to connect to script worker: %m");
+
+			return false;
+		}
+	}
+
+	return true;
+}
+
 __hidden bool
 uwsd_ws_connection_accept(uwsd_client_context_t *cl)
 {
 	const char *magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 	uwsd_action_t *action = cl->action;
-	int socktype = -1, waker[2];
+	int socktype = -1;
 	size_t len;
 	char *key;
 
@@ -488,25 +530,13 @@ uwsd_ws_connection_accept(uwsd_client_context_t *cl)
 
 			return false;
 		}
-
-		uwsd_state_transition(cl, STATE_CONN_WS_UPSTREAM_CONNECT);
 	}
 	else {
-		if (pipe(waker) == -1) {
-			uwsd_http_error_send(cl, 500, "Internal Server Error",
-				"Unable to spawn pipe: %s",
-				strerror(errno));
-
+		if (!ws_script_connect(cl))
 			return false;
-		}
-
-		cl->upstream.ufd.fd = waker[0];
-
-		if (!uwsd_script_connect(cl, waker[1]))
-			return false;
-
-		uwsd_ws_state_upstream_connected(cl, STATE_CONN_WS_UPSTREAM_CONNECT, true);
 	}
+
+	uwsd_state_transition(cl, STATE_CONN_WS_UPSTREAM_CONNECT);
 
 	return true;
 }
@@ -519,20 +549,36 @@ uwsd_ws_state_upstream_connected(uwsd_client_context_t *cl, uwsd_connection_stat
 	/* Base64 encode digest */
 	b64_encode(cl->rxbuf.data, 20, digest, sizeof(digest));
 
-	/* Format handshake reply */
-	uwsd_http_reply_start(cl, 101, "Switching Protocols");
-	uwsd_http_reply_header(cl, "Upgrade", "WebSocket");
-	uwsd_http_reply_header(cl, "Connection", "Upgrade");
-	uwsd_http_reply_header(cl, "Sec-WebSocket-Accept", digest);
+	/* NB: Script workers will deal with the HTTP upgrade reply themselves as
+	 * it depends on subprotocol accepted by the onConnect() callback. */
+	if (cl->action->type == UWSD_ACTION_SCRIPT) {
+		if (!uwsd_script_connect(cl, digest))
+			return;
 
-	if (cl->script.proto)
-		uwsd_http_reply_header(cl, "Sec-WebSocket-Protocol", ucv_string_get(cl->script.proto));
+		//uwsd_ws_state_upstream_recv(cl, state, upstream);
+		uwsd_state_transition(cl, STATE_CONN_WS_IDLE);
+	}
+	else {
+		/* Format handshake reply */
+		uwsd_http_reply_start(cl, 101, "Switching Protocols");
+		uwsd_http_reply_header(cl, "Upgrade", "WebSocket");
+		uwsd_http_reply_header(cl, "Connection", "Upgrade");
+		uwsd_http_reply_header(cl, "Sec-WebSocket-Accept", digest);
 
-	uwsd_http_reply_finish(cl, NULL);
+		/* NB: We could probably do better here and reject the handshake if the
+		 * configured subprotocol does not match the client proposal, however I
+		 * couldn't figure out a best practice to do so. Simply reply with our
+		 * statically configured subprotocol (or none at all) and let the client
+		 * deal with it. */
+		if (cl->action->data.proxy.subprotocol)
+			uwsd_http_reply_header(cl, "Sec-WebSocket-Protocol", cl->action->data.proxy.subprotocol);
 
-	/* Send handshake reply */
-	cl->rxbuf.pos = cl->rxbuf.end;
-	ws_downstream_tx(cl, 0, false, cl->rxbuf.data, cl->rxbuf.end - cl->rxbuf.data);
+		uwsd_http_reply_finish(cl, NULL);
+
+		/* Send handshake reply */
+		cl->rxbuf.pos = cl->rxbuf.end;
+		ws_downstream_tx(cl, 0, false, cl->rxbuf.data, cl->rxbuf.end - cl->rxbuf.data);
+	}
 }
 
 static bool
@@ -553,7 +599,7 @@ ws_handle_frame_payload(uwsd_client_context_t *cl, void *data, size_t len)
 	/* for other frames, forward payload upstream */
 	default:
 		if (cl->action->type == UWSD_ACTION_SCRIPT) {
-			if (!uwsd_script_send(cl, cl->rxbuf.sent, cl->rxbuf.pos - cl->rxbuf.sent))
+			if (!uwsd_script_send(cl, cl->rxbuf.sent, len))
 				return false;
 		}
 		else {
@@ -606,70 +652,45 @@ ws_handle_frame_completion(uwsd_client_context_t *cl, void *data, size_t len)
 __hidden void
 uwsd_ws_state_upstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
-	ssize_t wlen = cl->rxbuf.pos - cl->rxbuf.sent;
-
-	if (!ws_handle_frame_payload(cl, cl->rxbuf.sent, wlen))
+	if (!ws_handle_frame_payload(cl, cl->rxbuf.sent, cl->rxbuf.pos - cl->rxbuf.sent))
 		return; /* error */
 
-	cl->rxbuf.sent += wlen;
+	cl->rxbuf.sent = cl->rxbuf.pos;
 
-	if (cl->rxbuf.sent == cl->rxbuf.pos) {
-		switch (cl->ws.state) {
-		case STATE_WS_PAYLOAD:
-			return uwsd_state_transition(cl, STATE_CONN_WS_DOWNSTREAM_RECV);
+	switch (cl->ws.state) {
+	case STATE_WS_PAYLOAD:
+		return uwsd_state_transition(cl, STATE_CONN_WS_DOWNSTREAM_RECV);
 
-		case STATE_WS_COMPLETE:
-			if (!ws_handle_frame_completion(cl, cl->ws.buf.data, cl->ws.buflen))
-				return; /* error or delayed send */
+	case STATE_WS_COMPLETE:
+		if (!ws_handle_frame_completion(cl, cl->ws.buf.data, cl->ws.buflen))
+			return; /* error or delayed send */
 
-			/* XXX: more buffered data, extract next frame */
-			ws_state_transition(cl, STATE_WS_HEADER);
+		/* XXX: more buffered data, extract next frame */
+		ws_state_transition(cl, STATE_WS_HEADER);
 
-			/* rx buffer exhausted, await more data */
-			if (cl->rxbuf.pos == cl->rxbuf.end)
-				return uwsd_state_transition(cl, STATE_CONN_WS_IDLE);
+		/* rx buffer exhausted, await more data */
+		if (cl->rxbuf.pos == cl->rxbuf.end)
+			return uwsd_state_transition(cl, STATE_CONN_WS_IDLE);
 
+		if (!ws_downstream_rx(cl))
+			return; /* invalid */
 
-			if (!ws_downstream_rx(cl))
-				return; /* invalid */
+		if (cl->ws.state < STATE_WS_PAYLOAD)
+			return uwsd_state_transition(cl, STATE_CONN_WS_DOWNSTREAM_RECV); /* need more data */
 
-			if (cl->ws.state < STATE_WS_PAYLOAD)
-				return uwsd_state_transition(cl, STATE_CONN_WS_DOWNSTREAM_RECV); /* need more data */
+		break;
 
-			break;
-
-		default:
-			return ws_terminate(cl, STATUS_INTERNAL_ERROR,
-				"Unexpected WebSocket state: %s", ws_state_name(cl->ws.state));
-		}
+	default:
+		return ws_terminate(cl, STATUS_INTERNAL_ERROR,
+			"Unexpected WebSocket state: %s", ws_state_name(cl->ws.state));
 	}
 }
 
 __hidden void
 uwsd_ws_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
+	struct iovec iov;
 	ssize_t rlen;
-	char c;
-
-	// XXX: waker pipe
-	if (cl->action->type == UWSD_ACTION_SCRIPT) {
-		while (true) {
-			rlen = client_recv(&cl->upstream, &c, 1);
-
-			if (rlen == -1) {
-				if (errno != EAGAIN && errno != EWOULDBLOCK)
-					uwsd_ws_err(cl, "Waker pipe read error: %s", strerror(errno));
-
-				break;
-			}
-
-			uwsd_ws_debug(cl, "Script wakeup signal: %c", c);
-		}
-
-		uwsd_state_transition(cl, STATE_CONN_WS_DOWNSTREAM_SEND);
-
-		return;
-	}
 
 	rlen = client_recv(&cl->upstream, cl->txbuf.data + WS_TX_BUFFER_HEADROOM,
 		sizeof(cl->txbuf.data) - WS_TX_BUFFER_HEADROOM);
@@ -692,13 +713,21 @@ uwsd_ws_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t s
 		return;
 	}
 
-	cl->txbuf.pos = cl->txbuf.data + WS_TX_BUFFER_HEADROOM;
-	cl->txbuf.end = cl->txbuf.pos + rlen;
+	if (cl->action->type == UWSD_ACTION_SCRIPT) {
+		iov.iov_base = cl->txbuf.data + WS_TX_BUFFER_HEADROOM;
+		iov.iov_len = rlen;
 
-	ws_downstream_tx(cl,
-		cl->action->data.proxy.binary ? OPCODE_BINARY : OPCODE_TEXT,
-		true,
-		cl->txbuf.pos, rlen);
+		ws_downstream_tx_iov(cl, &iov, 1);
+	}
+	else {
+		cl->txbuf.pos = cl->txbuf.data + WS_TX_BUFFER_HEADROOM;
+		cl->txbuf.end = cl->txbuf.pos + rlen;
+
+		ws_downstream_tx(cl,
+			cl->action->data.proxy.binary ? OPCODE_BINARY : OPCODE_TEXT,
+			true,
+			cl->txbuf.pos, rlen);
+	}
 }
 
 __hidden void
@@ -751,11 +780,6 @@ uwsd_ws_state_downstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 
 	if (cl->ws.state < STATE_WS_PAYLOAD)
 		return; /* need more data */
-
-	/* For script backends, invoke upstream send callback directly as we'll
-	 * have no epoll-capable fd to notify us */
-	if (cl->action->type == UWSD_ACTION_SCRIPT)
-		return uwsd_ws_state_upstream_send(cl, STATE_CONN_WS_UPSTREAM_SEND, true);
 
 	uwsd_state_transition(cl, STATE_CONN_WS_UPSTREAM_SEND);
 }

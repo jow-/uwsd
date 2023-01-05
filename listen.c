@@ -47,7 +47,7 @@ accept_cb(struct uloop_fd *ufd, unsigned int events)
 		return;
 	}
 
-	client_create2(fd, listen, (struct sockaddr *)&sa, alen);
+	client_create(fd, listen, (struct sockaddr *)&sa, alen);
 }
 
 __hidden bool

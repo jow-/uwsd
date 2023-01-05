@@ -22,7 +22,6 @@
 #include <netinet/in.h>
 #include <libubox/list.h>
 #include <libubox/uloop.h>
-#include <ucode/vm.h>
 
 #include "listen.h"
 #include "state.h"
@@ -91,14 +90,9 @@ typedef struct uwsd_client_context {
 		struct list_head txq;
 		size_t txqlen;
 	} ws;
-	struct {
-		int fd;
-		size_t msgoff;
-		uc_value_t *conn, *data, *proto;
-	} script;
 } uwsd_client_context_t;
 
-__hidden void client_create2(int, uwsd_listen_t *, struct sockaddr *, size_t);
+__hidden void client_create(int, uwsd_listen_t *, struct sockaddr *, size_t);
 __hidden void client_free(uwsd_client_context_t *, const char *, ...);
 __hidden void client_free_all(void);
 
