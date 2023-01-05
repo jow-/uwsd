@@ -1267,19 +1267,22 @@ http_script_connect(uwsd_client_context_t *cl)
 {
 	struct sockaddr_un *sun = &cl->action->data.script.sun;
 
-	if (cl->upstream.ufd.fd == -1) {
-		uwsd_http_debug(cl, "connecting to script worker");
+	/* Close previous connections as script host does (yet) handle
+	 * HTTP connection reuse */
+	if (cl->upstream.ufd.fd != -1)
+		close(cl->upstream.ufd.fd);
 
-		cl->upstream.ufd.fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	uwsd_http_debug(cl, "connecting to script worker");
 
-		if (cl->upstream.ufd.fd == -1)
-			http_error_return(cl, 502, "Bad Gateway",
-				"Unable to spawn UNIX socket: %m\n");
+	cl->upstream.ufd.fd = socket(AF_UNIX, SOCK_STREAM, 0);
 
-		if (connect(cl->upstream.ufd.fd, sun, sizeof(*sun)) == -1 && errno != EINPROGRESS)
-			http_error_return(cl, 502, "Bad Gateway",
-				"Unable to connect to script worker: %m");
-	}
+	if (cl->upstream.ufd.fd == -1)
+		http_error_return(cl, 502, "Bad Gateway",
+			"Unable to spawn UNIX socket: %m\n");
+
+	if (connect(cl->upstream.ufd.fd, sun, sizeof(*sun)) == -1 && errno != EINPROGRESS)
+		http_error_return(cl, 502, "Bad Gateway",
+			"Unable to connect to script worker: %m");
 
 	uwsd_state_transition(cl, STATE_CONN_UPSTREAM_CONNECT);
 
@@ -1535,12 +1538,6 @@ uwsd_http_state_upstream_connected(uwsd_client_context_t *cl, uwsd_connection_st
 	}
 
 	cl->rxbuf.sent = cl->rxbuf.data;
-
-	/* we use a oneway pipe towards the script and won't ever get write readyness,
-	 * so directly transition to upstream send callback */
-	// XXX: FIXME
-	//if (cl->action->type == UWSD_ACTION_SCRIPT)
-	//	return uwsd_http_state_upstream_send(cl, STATE_CONN_UPSTREAM_SEND, true);
 
 	uwsd_state_transition(cl, STATE_CONN_UPSTREAM_SEND);
 }
