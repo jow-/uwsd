@@ -48,7 +48,12 @@ typedef struct uwsd_client_context {
 		struct sockaddr unspec;
 		struct sockaddr_in in;
 		struct sockaddr_in6 in6;
-	} sa;
+	} sa_local;
+	union {
+		struct sockaddr unspec;
+		struct sockaddr_in in;
+		struct sockaddr_in6 in6;
+	} sa_peer;
 	struct {
 		uint8_t data[8192];
 		uint8_t *pos, *end, *sent;

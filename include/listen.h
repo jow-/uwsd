@@ -84,11 +84,6 @@ typedef struct {
 
 typedef struct {
 	struct list_head list;
-	union {
-		struct sockaddr unspec;
-		struct sockaddr_in inet;
-		struct sockaddr_in6 inet6;
-	} addr;
 	char *hostname;
 	uint16_t port;
 	struct uloop_fd ufd;

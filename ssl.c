@@ -430,7 +430,7 @@ uwsd_ssl_init(uwsd_client_context_t *cl)
 	SSL_CTX *tls_ctx;
 	SSL *ssl = NULL;
 
-	tls_ctx = ssl_lookup_context_by_sockaddr(cl, &cl->sa.unspec);
+	tls_ctx = ssl_lookup_context_by_sockaddr(cl, &cl->sa_peer.unspec);
 
 #ifndef NDEBUG
 	X509_NAME *n = X509_get_subject_name(SSL_CTX_get0_certificate(tls_ctx));
@@ -440,7 +440,7 @@ uwsd_ssl_init(uwsd_client_context_t *cl)
 	uwsd_ssl_debug(cl, "selecting cert '%s' by '%s' for IP address '%s'",
 		n ? ssl_get_subject_cn(n) : NULL,
 		i ? ssl_get_subject_cn(i) : NULL,
-		inet_ntop(cl->sa.unspec.sa_family, &cl->sa.in6.sin6_addr, buf, sizeof(buf)));
+		inet_ntop(cl->sa_peer.unspec.sa_family, &cl->sa_peer.in6.sin6_addr, buf, sizeof(buf)));
 #endif
 
 	SSL_CTX_set_tlsext_servername_callback(tls_ctx, servername_cb);

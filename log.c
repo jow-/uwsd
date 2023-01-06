@@ -44,14 +44,14 @@ uwsd_log(uwsd_log_priority_t prio, uwsd_log_channel_t chan, uwsd_client_context_
 		(long)tv.tv_sec, (long)tv.tv_usec / 1000);
 
 	if (cl) {
-		if (cl->sa.unspec.sa_family == AF_INET6)
+		if (cl->sa_peer.unspec.sa_family == AF_INET6)
 			fprintf(stderr, "([%s]:%hu) ",
-				inet_ntop(AF_INET6, &cl->sa.in6.sin6_addr, buf, sizeof(buf)),
-				ntohs(cl->sa.in6.sin6_port));
+				inet_ntop(AF_INET6, &cl->sa_peer.in6.sin6_addr, buf, sizeof(buf)),
+				ntohs(cl->sa_peer.in6.sin6_port));
 		else
 			fprintf(stderr, "(%s:%hu) ",
-				inet_ntop(AF_INET, &cl->sa.in.sin_addr, buf, sizeof(buf)),
-				ntohs(cl->sa.in.sin_port));
+				inet_ntop(AF_INET, &cl->sa_peer.in.sin_addr, buf, sizeof(buf)),
+				ntohs(cl->sa_peer.in.sin_port));
 	}
 
 	switch (prio) {

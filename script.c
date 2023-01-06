@@ -1232,7 +1232,7 @@ uwsd_script_connect(uwsd_client_context_t *cl, const char *acceptkey)
 	ssize_t total = 0;
 	size_t i;
 
-	total += static_tlv(&iop, UWSD_SCRIPT_DATA_PEER_ADDR, sizeof(cl->sa.in6), &cl->sa.in6);
+	total += static_tlv(&iop, UWSD_SCRIPT_DATA_PEER_ADDR, sizeof(cl->sa_peer.in6), &cl->sa_peer.in6);
 	total += static_tlv(&iop, UWSD_SCRIPT_DATA_HTTP_VERSION, sizeof(cl->http_version), &cl->http_version);
 	total += static_tlv(&iop, UWSD_SCRIPT_DATA_HTTP_METHOD, sizeof(cl->request_method), &cl->request_method);
 	total += static_tlv(&iop, UWSD_SCRIPT_DATA_HTTP_URI, strlen(cl->request_uri), cl->request_uri);
@@ -1313,7 +1313,7 @@ uwsd_script_request(uwsd_client_context_t *cl, int downstream)
 	ssize_t total = 0;
 	size_t i;
 
-	total += static_tlv(&iop, UWSD_SCRIPT_DATA_PEER_ADDR, sizeof(cl->sa.in6), &cl->sa.in6);
+	total += static_tlv(&iop, UWSD_SCRIPT_DATA_PEER_ADDR, sizeof(cl->sa_peer.in6), &cl->sa_peer.in6);
 	total += static_tlv(&iop, UWSD_SCRIPT_DATA_HTTP_VERSION, sizeof(cl->http_version), &cl->http_version);
 	total += static_tlv(&iop, UWSD_SCRIPT_DATA_HTTP_METHOD, sizeof(cl->request_method), &cl->request_method);
 	total += static_tlv(&iop, UWSD_SCRIPT_DATA_HTTP_URI, strlen(cl->request_uri), cl->request_uri);
