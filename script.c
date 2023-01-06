@@ -43,7 +43,9 @@ static LIST_HEAD(requests);
 
 typedef enum {
 	UWSD_SCRIPT_DATA_PEER_ADDR,
-	UWSD_SCRIPT_DATA_CONNECTION_TYPE,
+	UWSD_SCRIPT_DATA_LOCAL_ADDR,
+	UWSD_SCRIPT_DATA_X509_PEER_ISSUER,
+	UWSD_SCRIPT_DATA_X509_PEER_SUBJECT,
 	UWSD_SCRIPT_DATA_HTTP_VERSION,
 	UWSD_SCRIPT_DATA_HTTP_METHOD,
 	UWSD_SCRIPT_DATA_HTTP_URI,
@@ -661,6 +663,36 @@ uc_script_request_header(uc_vm_t *vm, size_t nargs)
 }
 
 static uc_value_t *
+uc_script_request_info(uc_vm_t *vm, size_t nargs)
+{
+	script_connection_t **conn = uc_fn_this("uwsd.connection");
+	uc_value_t *rv, *v;
+	size_t i;
+
+	const char *fields[] = {
+		"local_address", "local_port",
+		"peer_address", "peer_port",
+		"x509_peer_issuer", "x509_peer_subject"
+	};
+
+	if (!conn || !*conn)
+		return NULL;
+
+	rv = ucv_object_new(vm);
+
+	for (i = 0; i < ARRAY_SIZE(fields); i++) {
+		v = ucv_object_get((*conn)->req, fields[i], NULL);
+
+		if (v)
+			ucv_object_add(rv, fields[i], ucv_get(v));
+	}
+
+	ucv_set_constant(rv, true);
+
+	return rv;
+}
+
+static uc_value_t *
 uc_script_reply(uc_vm_t *vm, size_t nargs)
 {
 	script_connection_t **conn = uc_fn_this("uwsd.connection");
@@ -754,6 +786,7 @@ static const uc_function_list_t conn_fns[] = {
 	{ "method",  uc_script_request_method },
 	{ "uri",     uc_script_request_uri },
 	{ "header",  uc_script_request_header },
+	{ "info",    uc_script_request_info },
 	{ "data",    uc_script_data },
 
 	{ "reply",   uc_script_reply },
@@ -844,21 +877,40 @@ handle_tlv(script_connection_t *conn, uint16_t type, uint16_t len, uint8_t *data
 
 	switch (type) {
 	case UWSD_SCRIPT_DATA_PEER_ADDR:
+	case UWSD_SCRIPT_DATA_LOCAL_ADDR:
 		if (sa->sa_family == AF_INET) {
+			u16 = ntohs(((struct sockaddr_in *)sa)->sin_port);
 			inet_ntop(AF_INET, &((struct sockaddr_in *)sa)->sin_addr, addr, sizeof(addr));
-
-			ucv_object_add(conn->req, "peer_port",
-				ucv_uint64_new(ntohs(((struct sockaddr_in *)sa)->sin_port)));
 		}
 		else {
-			inet_ntop(AF_INET6, &((struct sockaddr_in6 *)sa)->sin6_addr, addr, sizeof(addr));
+			u16 = ntohs(((struct sockaddr_in6 *)sa)->sin6_port);
 
-			ucv_object_add(conn->req, "peer_port",
-				ucv_uint64_new(ntohs(((struct sockaddr_in6 *)sa)->sin6_port)));
+			if (IN6_IS_ADDR_V4MAPPED(&((struct sockaddr_in6 *)sa)->sin6_addr))
+				inet_ntop(AF_INET, &((struct sockaddr_in6 *)sa)->sin6_addr.s6_addr[12], addr, sizeof(addr));
+			else
+				inet_ntop(AF_INET6, &((struct sockaddr_in6 *)sa)->sin6_addr, addr, sizeof(addr));
 		}
 
-		ucv_object_add(conn->req, "peer_address",
-			ucv_string_new(addr));
+		if (type == UWSD_SCRIPT_DATA_LOCAL_ADDR) {
+			ucv_object_add(conn->req, "local_address", ucv_string_new(addr));
+			ucv_object_add(conn->req, "local_port", ucv_uint64_new(u16));
+		}
+		else {
+			ucv_object_add(conn->req, "peer_address", ucv_string_new(addr));
+			ucv_object_add(conn->req, "peer_port", ucv_uint64_new(u16));
+		}
+
+		break;
+
+	case UWSD_SCRIPT_DATA_X509_PEER_ISSUER:
+		ucv_object_add(conn->req, "x509_peer_issuer",
+			ucv_string_new_length((char *)data, len));
+
+		break;
+
+	case UWSD_SCRIPT_DATA_X509_PEER_SUBJECT:
+		ucv_object_add(conn->req, "x509_peer_subject",
+			ucv_string_new_length((char *)data, len));
 
 		break;
 
@@ -1227,12 +1279,14 @@ __hidden bool
 uwsd_script_connect(uwsd_client_context_t *cl, const char *acceptkey)
 {
 	uint16_t tv[cl->http_num_headers], lv[cl->http_num_headers];
-	struct iovec iov[(5 + cl->http_num_headers) * 3];
+	struct iovec iov[(8 + cl->http_num_headers) * 3];
 	struct iovec *iop = iov;
 	ssize_t total = 0;
+	const char *s;
 	size_t i;
 
 	total += static_tlv(&iop, UWSD_SCRIPT_DATA_PEER_ADDR, sizeof(cl->sa_peer.in6), &cl->sa_peer.in6);
+	total += static_tlv(&iop, UWSD_SCRIPT_DATA_LOCAL_ADDR, sizeof(cl->sa_local.in6), &cl->sa_local.in6);
 	total += static_tlv(&iop, UWSD_SCRIPT_DATA_HTTP_VERSION, sizeof(cl->http_version), &cl->http_version);
 	total += static_tlv(&iop, UWSD_SCRIPT_DATA_HTTP_METHOD, sizeof(cl->request_method), &cl->request_method);
 	total += static_tlv(&iop, UWSD_SCRIPT_DATA_HTTP_URI, strlen(cl->request_uri), cl->request_uri);
@@ -1241,6 +1295,18 @@ uwsd_script_connect(uwsd_client_context_t *cl, const char *acceptkey)
 		tv[i] = htons(UWSD_SCRIPT_DATA_HTTP_HEADER);
 		lv[i] = htons(strlen(cl->http_headers[i].name) + strlen(cl->http_headers[i].value) + 2);
 		total += push_tlv(&iop, &tv[i], &lv[i], cl->http_headers[i].name);
+	}
+
+	if (cl->listener->ssl) {
+		s = uwsd_ssl_peer_issuer_name(&cl->downstream);
+
+		if (s)
+			total += static_tlv(&iop, UWSD_SCRIPT_DATA_X509_PEER_ISSUER, strlen(s), s);
+
+		s = uwsd_ssl_peer_subject_name(&cl->downstream);
+
+		if (s)
+			total += static_tlv(&iop, UWSD_SCRIPT_DATA_X509_PEER_SUBJECT, strlen(s), s);
 	}
 
 	total += static_tlv(&iop, UWSD_SCRIPT_DATA_WS_INIT, strlen(acceptkey) + 1, acceptkey);
@@ -1308,12 +1374,14 @@ __hidden bool
 uwsd_script_request(uwsd_client_context_t *cl, int downstream)
 {
 	uint16_t tv[cl->http_num_headers], lv[cl->http_num_headers];
-	struct iovec iov[(4 + cl->http_num_headers) * 3];
+	struct iovec iov[(7 + cl->http_num_headers) * 3];
 	struct iovec *iop = iov;
 	ssize_t total = 0;
+	const char *s;
 	size_t i;
 
 	total += static_tlv(&iop, UWSD_SCRIPT_DATA_PEER_ADDR, sizeof(cl->sa_peer.in6), &cl->sa_peer.in6);
+	total += static_tlv(&iop, UWSD_SCRIPT_DATA_LOCAL_ADDR, sizeof(cl->sa_local.in6), &cl->sa_local.in6);
 	total += static_tlv(&iop, UWSD_SCRIPT_DATA_HTTP_VERSION, sizeof(cl->http_version), &cl->http_version);
 	total += static_tlv(&iop, UWSD_SCRIPT_DATA_HTTP_METHOD, sizeof(cl->request_method), &cl->request_method);
 	total += static_tlv(&iop, UWSD_SCRIPT_DATA_HTTP_URI, strlen(cl->request_uri), cl->request_uri);
@@ -1324,7 +1392,19 @@ uwsd_script_request(uwsd_client_context_t *cl, int downstream)
 		total += push_tlv(&iop, &tv[i], &lv[i], cl->http_headers[i].name);
 	}
 
-	return (writev(cl->upstream.ufd.fd, iov, ARRAY_SIZE(iov)) == total);
+	if (cl->listener->ssl) {
+		s = uwsd_ssl_peer_issuer_name(&cl->downstream);
+
+		if (s)
+			total += static_tlv(&iop, UWSD_SCRIPT_DATA_X509_PEER_ISSUER, strlen(s), s);
+
+		s = uwsd_ssl_peer_subject_name(&cl->downstream);
+
+		if (s)
+			total += static_tlv(&iop, UWSD_SCRIPT_DATA_X509_PEER_SUBJECT, strlen(s), s);
+	}
+
+	return (writev(cl->upstream.ufd.fd, iov, iop - iov) == total);
 }
 
 __hidden bool
