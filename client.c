@@ -22,6 +22,7 @@
 #include <errno.h>
 
 #include <sys/time.h>
+#include <sys/ioctl.h>
 #include <sys/sendfile.h>
 #include <arpa/inet.h>
 
@@ -142,6 +143,20 @@ client_accept(uwsd_client_context_t *cl)
 		return uwsd_ssl_accept(cl);
 
 	return true;
+}
+
+__hidden ssize_t
+client_pending(uwsd_connection_t *conn)
+{
+	int pending;
+
+	if (conn->ssl)
+		return uwsd_ssl_pending(conn);
+
+	if (ioctl(conn->ufd.fd, FIONREAD, &pending) == -1)
+		return -1;
+
+	return pending;
 }
 
 __hidden ssize_t

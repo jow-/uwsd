@@ -520,6 +520,14 @@ uwsd_ssl_accept(uwsd_client_context_t *cl)
 }
 
 __hidden ssize_t
+uwsd_ssl_pending(uwsd_connection_t *conn)
+{
+	SSL *ssl = conn->ssl;
+
+	return SSL_pending(ssl);
+}
+
+__hidden ssize_t
 uwsd_ssl_recv(uwsd_connection_t *conn, void *data, size_t len)
 {
 	SSL *ssl = conn->ssl;

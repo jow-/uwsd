@@ -267,6 +267,9 @@ uwsd_state_transition(uwsd_client_context_t *cl, uwsd_connection_state_t state)
 			uloop_timeout_set(&cl->upstream.utm, timeout);
 		else
 			uloop_timeout_cancel(&cl->upstream.utm);
+
+		if (client_pending(&cl->upstream) > 0)
+			upstream_ufd_cb(&cl->upstream.ufd, ULOOP_READ);
 	}
 	else {
 		uloop_fd_delete(&cl->upstream.ufd);
@@ -280,6 +283,9 @@ uwsd_state_transition(uwsd_client_context_t *cl, uwsd_connection_state_t state)
 			uloop_timeout_set(&cl->downstream.utm, timeout);
 		else
 			uloop_timeout_cancel(&cl->downstream.utm);
+
+		if (client_pending(&cl->downstream) > 0)
+			downstream_ufd_cb(&cl->downstream.ufd, ULOOP_READ);
 	}
 	else {
 		uloop_fd_delete(&cl->downstream.ufd);
