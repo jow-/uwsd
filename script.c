@@ -83,6 +83,7 @@ typedef struct {
 	struct uloop_fd ufd;
 	script_context_t *ctx;
 	script_request_state_t state;
+	uwsd_protocol_t proto;
 	struct {
 		script_request_parse_state_t state;
 		uint16_t type;
@@ -90,7 +91,7 @@ typedef struct {
 		uint16_t datalen;
 		uint8_t data[8192];
 	} buf;
-	uc_value_t *req, *hdr, *conn, *data, *proto;
+	uc_value_t *req, *hdr, *conn, *data, *subproto;
 } script_connection_t;
 
 
@@ -269,6 +270,7 @@ script_conn_ws_handshake(script_connection_t *conn, const char *acceptkey)
 	conn_type = ucv_resource_type_lookup(vm, "uwsd.connection");
 	assert(conn_type);
 
+	conn->proto = UWSD_PROTOCOL_WS;
 	conn->conn = uc_resource_new(conn_type, conn);
 
 	if (conn->ctx->onConnect) {
@@ -326,7 +328,7 @@ script_conn_ws_handshake(script_connection_t *conn, const char *acceptkey)
 
 		ucv_put(uc_vm_stack_pop(vm));
 
-		if (!conn->proto) {
+		if (!conn->subproto) {
 			http_reply_send(conn,
 				500, "Internal Server Error",
 				"The onConnect() handler did not accept the connection\n",
@@ -339,8 +341,8 @@ script_conn_ws_handshake(script_connection_t *conn, const char *acceptkey)
 			return false;
 		}
 
-		if (ucv_type(conn->proto) != UC_STRING)
-			ucv_clear(&conn->proto);
+		if (ucv_type(conn->subproto) != UC_STRING)
+			ucv_clear(&conn->subproto);
 	}
 
 	http_reply_send(conn,
@@ -349,7 +351,7 @@ script_conn_ws_handshake(script_connection_t *conn, const char *acceptkey)
 		"Upgrade", "WebSocket",
 		"Connection", "Upgrade",
 		"Sec-WebSocket-Accept", acceptkey,
-		"Sec-WebSocket-Protocol", ucv_string_get(conn->proto),
+		"Sec-WebSocket-Protocol", ucv_string_get(conn->subproto),
 		UWSD_HTTP_REPLY_EOH
 	);
 
@@ -421,7 +423,7 @@ script_conn_close(script_connection_t *conn, uint16_t code, const char *msg)
 
 	ucv_clear(&conn->req);
 	ucv_clear(&conn->data);
-	ucv_clear(&conn->proto);
+	ucv_clear(&conn->subproto);
 	ucv_clear(&conn->conn);
 
 	uloop_fd_delete(&conn->ufd);
@@ -438,19 +440,20 @@ script_conn_http_request(script_connection_t *conn)
 	uc_exception_type_t ex;
 	uc_value_t *ctx;
 
-	conn_type = ucv_resource_type_lookup(vm, "uwsd.request");
+	conn_type = ucv_resource_type_lookup(vm, "uwsd.connection");
 	assert(conn_type);
 
 	ucv_set_constant(conn->req, true);
 	ucv_set_constant(conn->hdr, true);
 
+	conn->proto = UWSD_PROTOCOL_HTTP;
 	conn->conn = uc_resource_new(conn_type, conn);
 
 	if (conn->ctx->onRequest) {
 		uc_vm_stack_push(vm, ucv_get(conn->ctx->onRequest));
 		uc_vm_stack_push(vm, ucv_get(conn->conn));
-		uc_vm_stack_push(vm, ucv_get(ucv_object_get(conn->conn, "request_method", NULL)));
-		uc_vm_stack_push(vm, ucv_get(ucv_object_get(conn->conn, "request_uri", NULL)));
+		uc_vm_stack_push(vm, ucv_get(ucv_object_get(conn->req, "request_method", NULL)));
+		uc_vm_stack_push(vm, ucv_get(ucv_object_get(conn->req, "request_uri", NULL)));
 
 		ex = uc_vm_call(vm, false, 3);
 
@@ -536,13 +539,13 @@ uc_script_accept(uc_vm_t *vm, size_t nargs)
 	script_connection_t **conn = uc_fn_this("uwsd.connection");
 	uc_value_t *proto = uc_fn_arg(0);
 
-	if (!conn || !*conn)
+	if (!conn || !*conn || (*conn)->proto != UWSD_PROTOCOL_WS)
 		return NULL;
 
 	if (proto && ucv_type(proto) != UC_STRING)
 		return NULL;
 
-	(*conn)->proto = proto ? ucv_get(proto) : ucv_boolean_new(true);
+	(*conn)->subproto = proto ? ucv_get(proto) : ucv_boolean_new(true);
 
 	return ucv_boolean_new(true);
 }
@@ -552,9 +555,6 @@ uc_script_data(uc_vm_t *vm, size_t nargs)
 {
 	script_connection_t **conn = uc_fn_this("uwsd.connection");
 	uc_value_t *set = uc_fn_arg(0);
-
-	if (!conn)
-		conn = uc_fn_this("uwsd.request");
 
 	if (!conn || !*conn)
 		return NULL;
@@ -576,7 +576,7 @@ uc_script_send(uc_vm_t *vm, size_t nargs)
 	script_connection_t **conn = uc_fn_this("uwsd.connection");
 	uc_value_t *data = uc_fn_arg(0);
 
-	if (!conn || !*conn)
+	if (!conn || !*conn || (*conn)->proto != UWSD_PROTOCOL_WS)
 		return NULL;
 
 	if (ucv_type(data) != UC_STRING)
@@ -593,7 +593,7 @@ uc_script_close(uc_vm_t *vm, size_t nargs)
 	uc_value_t *rcode = uc_fn_arg(0);
 	uc_value_t *rmsg = uc_fn_arg(1);
 
-	if (!conn || !*conn)
+	if (!conn || !*conn || (*conn)->proto != UWSD_PROTOCOL_WS)
 		return NULL;
 
 	if (ucv_type(rcode) != UC_INTEGER || ucv_type(rmsg) != UC_STRING)
@@ -607,28 +607,15 @@ uc_script_close(uc_vm_t *vm, size_t nargs)
 	return ucv_boolean_new(true);
 }
 
-static const uc_function_list_t conn_fns[] = {
-	{ "accept",	uc_script_accept },
-	{ "data",	uc_script_data },
-	{ "send",	uc_script_send },
-	{ "close",	uc_script_close }
-};
-
-static void
-close_conn(void *ud)
-{
-}
-
-
 static uc_value_t *
 uc_script_get_common(uc_vm_t *vm, size_t nargs, const char *field)
 {
-	script_connection_t **conn = uc_fn_this("uwsd.request");
+	script_connection_t **conn = uc_fn_this("uwsd.connection");
 
 	if (!conn || !*conn)
 		return NULL;
 
-	return ucv_get(ucv_object_get((*conn)->conn, field, NULL));
+	return ucv_get(ucv_object_get((*conn)->req, field, NULL));
 }
 
 static uc_value_t *
@@ -652,7 +639,7 @@ uc_script_request_uri(uc_vm_t *vm, size_t nargs)
 static uc_value_t *
 uc_script_request_header(uc_vm_t *vm, size_t nargs)
 {
-	script_connection_t **conn = uc_fn_this("uwsd.request");
+	script_connection_t **conn = uc_fn_this("uwsd.connection");
 	uc_value_t *name = uc_fn_arg(0);
 
 	if (!conn || !*conn)
@@ -674,7 +661,7 @@ uc_script_request_header(uc_vm_t *vm, size_t nargs)
 static uc_value_t *
 uc_script_reply(uc_vm_t *vm, size_t nargs)
 {
-	script_connection_t **conn = uc_fn_this("uwsd.request");
+	script_connection_t **conn = uc_fn_this("uwsd.connection");
 	uc_stringbuf_t *buf = xprintbuf_new();
 	uc_value_t *header = uc_fn_arg(0);
 	uc_value_t *body = uc_fn_arg(1);
@@ -685,7 +672,7 @@ uc_script_reply(uc_vm_t *vm, size_t nargs)
 	bool found;
 	char *p;
 
-	if (!conn || !*conn)
+	if (!conn || !*conn || (*conn)->proto != UWSD_PROTOCOL_HTTP)
 		return NULL;
 
 	v = ucv_object_get(header, "Status", NULL);
@@ -702,7 +689,7 @@ uc_script_reply(uc_vm_t *vm, size_t nargs)
 	}
 
 	sprintbuf(buf, "HTTP/%.1f %03hu %s\r\n",
-		ucv_double_get(ucv_object_get((*conn)->conn, "http_version", NULL)),
+		ucv_double_get(ucv_object_get((*conn)->req, "http_version", NULL)),
 		status, reason);
 
 	ucv_object_foreach(header, name, value) {
@@ -761,17 +748,22 @@ uc_script_reply(uc_vm_t *vm, size_t nargs)
 	return ucv_boolean_new(!n);
 }
 
-static const uc_function_list_t req_fns[] = {
+static const uc_function_list_t conn_fns[] = {
 	{ "version", uc_script_http_version },
 	{ "method",  uc_script_request_method },
 	{ "uri",     uc_script_request_uri },
 	{ "header",  uc_script_request_header },
 	{ "data",    uc_script_data },
-	{ "reply",   uc_script_reply }
+
+	{ "reply",   uc_script_reply },
+	{ "accept",	 uc_script_accept },
+	{ "send",	 uc_script_send },
+
+	{ "close",	 uc_script_close }
 };
 
 static void
-close_req(void *ud)
+close_conn(void *ud)
 {
 }
 
@@ -1083,7 +1075,6 @@ script_context_run(const char *sockpath, const char *scriptpath)
 	switch (rc) {
 	case STATUS_OK:
 		uc_type_declare(&ctx.vm, "uwsd.connection", conn_fns, close_conn);
-		uc_type_declare(&ctx.vm, "uwsd.request", req_fns, close_req);
 
 		ctx.onConnect = ucv_get(ucv_array_get(result, 0));
 		ctx.onData    = ucv_get(ucv_array_get(result, 1));
