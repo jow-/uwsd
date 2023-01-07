@@ -1311,7 +1311,7 @@ uwsd_script_connect(uwsd_client_context_t *cl, const char *acceptkey)
 
 	total += static_tlv(&iop, UWSD_SCRIPT_DATA_WS_INIT, strlen(acceptkey) + 1, acceptkey);
 
-	return (writev(cl->upstream.ufd.fd, iov, ARRAY_SIZE(iov)) == total);
+	return (writev(cl->upstream.ufd.fd, iov, iop - iov) == total);
 }
 
 
