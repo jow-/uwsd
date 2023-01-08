@@ -348,10 +348,12 @@ ws_downstream_tx_iov(uwsd_client_context_t *cl, struct iovec *iov, size_t iolen)
 			ws_terminate(cl, STATUS_TERMINATED, "Peer send error: %s", strerror(errno));
 		}
 		else {
-			if (!list_empty(&cl->ws.txq))
+			if (!list_empty(&cl->ws.txq)) {
 				uwsd_ws_debug(cl, "TX in progress (qlen %zu), delaying send...", cl->ws.txqlen);
-			else
+			}
+			else {
 				uwsd_ws_debug(cl, "Partial TX, delaying sending remainder...");
+			}
 
 			ws_add_txq(cl, iov, iolen);
 			uwsd_state_transition(cl, STATE_CONN_WS_DOWNSTREAM_SEND);
