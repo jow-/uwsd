@@ -188,6 +188,15 @@ upstream_utm_cb(struct uloop_timeout *utm)
 }
 
 static void
+upstream_pending_cb(struct uloop_timeout *utm)
+{
+	uwsd_client_context_t *cl = container_of(utm, uwsd_client_context_t, upstream.utm);
+
+	utm->cb = upstream_utm_cb;
+	states[cl->state].io_cb(cl, cl->state, true);
+}
+
+static void
 downstream_ufd_cb(struct uloop_fd *ufd, unsigned int events)
 {
 	uwsd_client_context_t *cl = container_of(ufd, uwsd_client_context_t, downstream.ufd);
@@ -201,6 +210,15 @@ downstream_utm_cb(struct uloop_timeout *utm)
 	uwsd_client_context_t *cl = container_of(utm, uwsd_client_context_t, downstream.utm);
 
 	states[cl->state].timeout_cb(cl, cl->state, false);
+}
+
+static void
+downstream_pending_cb(struct uloop_timeout *utm)
+{
+	uwsd_client_context_t *cl = container_of(utm, uwsd_client_context_t, downstream.utm);
+
+	utm->cb = downstream_utm_cb;
+	states[cl->state].io_cb(cl, cl->state, false);
 }
 
 static int
@@ -228,6 +246,7 @@ timeout_value(uwsd_client_context_t *cl, uwsd_timeout_kind_t tt)
 
 	return -1;
 }
+
 
 __hidden void
 uwsd_state_init(uwsd_client_context_t *cl, uwsd_connection_state_t state)
@@ -261,15 +280,19 @@ uwsd_state_transition(uwsd_client_context_t *cl, uwsd_connection_state_t state)
 	timeout = timeout_value(cl, se->timeout);
 
 	if (se->channels & CHANNEL_UPSTREAM) {
-		uloop_fd_add(&cl->upstream.ufd, events);
+		if (client_pending(&cl->upstream)) {
+			cl->upstream.utm.cb = upstream_pending_cb;
+			uloop_timeout_set(&cl->upstream.utm, 0);
+			uloop_fd_delete(&cl->upstream.ufd);
+		}
+		else {
+			uloop_fd_add(&cl->upstream.ufd, events);
 
-		if (timeout > -1)
-			uloop_timeout_set(&cl->upstream.utm, timeout);
-		else
-			uloop_timeout_cancel(&cl->upstream.utm);
-
-		if (client_pending(&cl->upstream) > 0)
-			upstream_ufd_cb(&cl->upstream.ufd, ULOOP_READ);
+			if (timeout > -1)
+				uloop_timeout_set(&cl->upstream.utm, timeout);
+			else
+				uloop_timeout_cancel(&cl->upstream.utm);
+		}
 	}
 	else {
 		uloop_fd_delete(&cl->upstream.ufd);
@@ -277,15 +300,19 @@ uwsd_state_transition(uwsd_client_context_t *cl, uwsd_connection_state_t state)
 	}
 
 	if (se->channels & CHANNEL_DOWNSTREAM) {
-		uloop_fd_add(&cl->downstream.ufd, events);
+		if (client_pending(&cl->downstream)) {
+			cl->downstream.utm.cb = downstream_pending_cb;
+			uloop_timeout_set(&cl->downstream.utm, 0);
+			uloop_fd_delete(&cl->downstream.ufd);
+		}
+		else {
+			uloop_fd_add(&cl->downstream.ufd, events);
 
-		if (timeout > -1)
-			uloop_timeout_set(&cl->downstream.utm, timeout);
-		else
-			uloop_timeout_cancel(&cl->downstream.utm);
-
-		if (client_pending(&cl->downstream) > 0)
-			downstream_ufd_cb(&cl->downstream.ufd, ULOOP_READ);
+			if (timeout > -1)
+				uloop_timeout_set(&cl->downstream.utm, timeout);
+			else
+				uloop_timeout_cancel(&cl->downstream.utm);
+		}
 	}
 	else {
 		uloop_fd_delete(&cl->downstream.ufd);
