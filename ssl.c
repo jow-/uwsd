@@ -639,6 +639,14 @@ uwsd_ssl_sendv(uwsd_connection_t *conn, struct iovec *iov, size_t len)
 	return total ? total : -1;
 }
 
+__hidden ssize_t
+uwsd_ssl_close(uwsd_connection_t *conn)
+{
+	SSL *ssl = conn->ssl;
+
+	return SSL_shutdown(ssl);
+}
+
 __hidden const char *
 uwsd_ssl_peer_subject_name(uwsd_connection_t *conn)
 {

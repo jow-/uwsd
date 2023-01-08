@@ -101,11 +101,13 @@ client_free(uwsd_client_context_t *cl, const char *reason, ...)
 	uloop_timeout_cancel(&cl->downstream.utm);
 	uloop_fd_delete(&cl->downstream.ufd);
 
+	if (cl->downstream.ssl) {
+		uwsd_ssl_close(&cl->downstream);
+		uwsd_ssl_free(cl);
+	}
+
 	if (cl->downstream.ufd.fd != -1)
 		close(cl->downstream.ufd.fd);
-
-	if (cl->downstream.ssl)
-		uwsd_ssl_free(cl);
 
 	list_for_each_entry_safe(e, tmp, &cl->ws.txq, list)
 		free(e);
