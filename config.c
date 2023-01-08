@@ -49,7 +49,6 @@ typedef struct config_prop {
 	config_type_t type;
 	size_t offset;
 	const config_block_t *nested;
-	bool (*parse)(const config_prop_t *, void *, const char *);
 } config_prop_t;
 
 typedef struct config_block {
@@ -109,40 +108,40 @@ static const config_block_t ssl_spec = {
 	.free = free_ssl,
 	.properties = {
 		{ "verify-peer", BOOLEAN,
-			offsetof(uwsd_ssl_t, verify_peer), NULL, NULL },
+			offsetof(uwsd_ssl_t, verify_peer), NULL },
 		{ "private-key", STRING,
-			offsetof(uwsd_ssl_t, private_key), NULL, NULL },
+			offsetof(uwsd_ssl_t, private_key), NULL },
 		{ "certificate", STRING,
-			offsetof(uwsd_ssl_t, certificate), NULL, NULL },
+			offsetof(uwsd_ssl_t, certificate), NULL },
 		{ "certificate-directory", STRING,
-			offsetof(uwsd_ssl_t, certificate_directory), NULL, NULL },
+			offsetof(uwsd_ssl_t, certificate_directory), NULL },
 		{ 0 }
 	}
 };
 
-#define ACTION_PROPERTIES(type)											\
-	{ "match-protocol", NESTED_MULTIPLE,								\
-		offsetof(type, matches), &match_protocol_spec, NULL },			\
-	{ "match-hostname", NESTED_MULTIPLE,								\
-		offsetof(type, matches), &match_hostname_spec, NULL },			\
-	{ "match-path", NESTED_MULTIPLE,									\
-		offsetof(type, matches), &match_path_spec, NULL },				\
-	{ "serve-file", NESTED_SINGLE,										\
-		offsetof(type, default_action), &serve_file_spec, NULL },		\
-	{ "serve-directory", NESTED_SINGLE,									\
-		offsetof(type, default_action), &serve_directory_spec, NULL },	\
-	{ "run-script", NESTED_SINGLE,										\
-		offsetof(type, default_action), &run_script_spec, NULL },		\
-	{ "proxy-tcp", NESTED_SINGLE,										\
-		offsetof(type, default_action), &proxy_tcp_spec, NULL },		\
-	{ "proxy-udp", NESTED_SINGLE,										\
-		offsetof(type, default_action), &proxy_udp_spec, NULL },		\
-	{ "proxy-unix", NESTED_SINGLE,										\
-		offsetof(type, default_action), &proxy_unix_spec, NULL },		\
-	{ "auth-basic", NESTED_MULTIPLE,									\
-		offsetof(type, auth), &auth_basic_spec, NULL },					\
-	{ "auth-mtls", NESTED_MULTIPLE,										\
-		offsetof(type, auth), &auth_mtls_spec, NULL }
+#define ACTION_PROPERTIES(type)										\
+	{ "match-protocol", NESTED_MULTIPLE,							\
+		offsetof(type, matches), &match_protocol_spec },			\
+	{ "match-hostname", NESTED_MULTIPLE,							\
+		offsetof(type, matches), &match_hostname_spec },			\
+	{ "match-path", NESTED_MULTIPLE,								\
+		offsetof(type, matches), &match_path_spec },				\
+	{ "serve-file", NESTED_SINGLE,									\
+		offsetof(type, default_action), &serve_file_spec },			\
+	{ "serve-directory", NESTED_SINGLE,								\
+		offsetof(type, default_action), &serve_directory_spec },	\
+	{ "run-script", NESTED_SINGLE,									\
+		offsetof(type, default_action), &run_script_spec },			\
+	{ "proxy-tcp", NESTED_SINGLE,									\
+		offsetof(type, default_action), &proxy_tcp_spec },			\
+	{ "proxy-udp", NESTED_SINGLE,									\
+		offsetof(type, default_action), &proxy_udp_spec },			\
+	{ "proxy-unix", NESTED_SINGLE,									\
+		offsetof(type, default_action), &proxy_unix_spec },			\
+	{ "auth-basic", NESTED_MULTIPLE,								\
+		offsetof(type, auth), &auth_basic_spec },					\
+	{ "auth-mtls", NESTED_MULTIPLE,									\
+		offsetof(type, auth), &auth_mtls_spec }
 
 static const config_block_t match_protocol_spec;
 static const config_block_t match_hostname_spec;
@@ -225,15 +224,15 @@ static const config_block_t proxy_tcp_spec = {
 	.free = free_action,
 	.properties = {
 		{ "connect-timeout", INTEGER,
-			offsetof(uwsd_action_t, data.proxy.connect_timeout), NULL, NULL },
+			offsetof(uwsd_action_t, data.proxy.connect_timeout), NULL },
 		{ "transfer-timeout", INTEGER,
-			offsetof(uwsd_action_t, data.proxy.transfer_timeout), NULL, NULL },
+			offsetof(uwsd_action_t, data.proxy.transfer_timeout), NULL },
 		{ "idle-timeout", INTEGER,
-			offsetof(uwsd_action_t, data.proxy.idle_timeout), NULL, NULL },
+			offsetof(uwsd_action_t, data.proxy.idle_timeout), NULL },
 		{ "binary", BOOLEAN,
-			offsetof(uwsd_action_t, data.proxy.binary), NULL, NULL },
+			offsetof(uwsd_action_t, data.proxy.binary), NULL },
 		{ "subprotocol", STRING,
-			offsetof(uwsd_action_t, data.proxy.subprotocol), NULL, NULL },
+			offsetof(uwsd_action_t, data.proxy.subprotocol), NULL },
 		{ 0 }
 	}
 };
@@ -245,15 +244,15 @@ static const config_block_t proxy_udp_spec = {
 	.free = free_action,
 	.properties = {
 		{ "connect-timeout", INTEGER,
-			offsetof(uwsd_action_t, data.proxy.connect_timeout), NULL, NULL },
+			offsetof(uwsd_action_t, data.proxy.connect_timeout), NULL },
 		{ "transfer-timeout", INTEGER,
-			offsetof(uwsd_action_t, data.proxy.transfer_timeout), NULL, NULL },
+			offsetof(uwsd_action_t, data.proxy.transfer_timeout), NULL },
 		{ "idle-timeout", INTEGER,
-			offsetof(uwsd_action_t, data.proxy.idle_timeout), NULL, NULL },
+			offsetof(uwsd_action_t, data.proxy.idle_timeout), NULL },
 		{ "binary", BOOLEAN,
-			offsetof(uwsd_action_t, data.proxy.binary), NULL, NULL },
+			offsetof(uwsd_action_t, data.proxy.binary), NULL },
 		{ "subprotocol", STRING,
-			offsetof(uwsd_action_t, data.proxy.subprotocol), NULL, NULL },
+			offsetof(uwsd_action_t, data.proxy.subprotocol), NULL },
 		{ 0 }
 	}
 };
@@ -265,15 +264,15 @@ static const config_block_t proxy_unix_spec = {
 	.free = free_action,
 	.properties = {
 		{ "connect-timeout", INTEGER,
-			offsetof(uwsd_action_t, data.proxy.connect_timeout), NULL, NULL },
+			offsetof(uwsd_action_t, data.proxy.connect_timeout), NULL },
 		{ "transfer-timeout", INTEGER,
-			offsetof(uwsd_action_t, data.proxy.transfer_timeout), NULL, NULL },
+			offsetof(uwsd_action_t, data.proxy.transfer_timeout), NULL },
 		{ "idle-timeout", INTEGER,
-			offsetof(uwsd_action_t, data.proxy.idle_timeout), NULL, NULL },
+			offsetof(uwsd_action_t, data.proxy.idle_timeout), NULL },
 		{ "binary", BOOLEAN,
-			offsetof(uwsd_action_t, data.proxy.binary), NULL, NULL },
+			offsetof(uwsd_action_t, data.proxy.binary), NULL },
 		{ "subprotocol", STRING,
-			offsetof(uwsd_action_t, data.proxy.subprotocol), NULL, NULL },
+			offsetof(uwsd_action_t, data.proxy.subprotocol), NULL },
 		{ 0 }
 	}
 };
@@ -285,11 +284,11 @@ static const config_block_t auth_basic_spec = {
 	.free = free_auth,
 	.properties = {
 		{ "username", STRING,
-			offsetof(uwsd_auth_t, data.basic.username), NULL, NULL },
+			offsetof(uwsd_auth_t, data.basic.username), NULL },
 		{ "password", STRING,
-			offsetof(uwsd_auth_t, data.basic.password), NULL, NULL },
+			offsetof(uwsd_auth_t, data.basic.password), NULL },
 		{ "lookup-shadow", BOOLEAN,
-			offsetof(uwsd_auth_t, data.basic.lookup_shadow), NULL, NULL },
+			offsetof(uwsd_auth_t, data.basic.lookup_shadow), NULL },
 		{ 0 }
 	}
 };
@@ -301,9 +300,9 @@ static const config_block_t auth_mtls_spec = {
 	.free = free_auth,
 	.properties = {
 		{ "require-issuer", STRING,
-			offsetof(uwsd_auth_t, data.mtls.require_issuer), NULL, NULL },
+			offsetof(uwsd_auth_t, data.mtls.require_issuer), NULL },
 		{ "require-subject", STRING,
-			offsetof(uwsd_auth_t, data.mtls.require_subject), NULL, NULL },
+			offsetof(uwsd_auth_t, data.mtls.require_subject), NULL },
 		{ 0 }
 	}
 };
@@ -315,13 +314,13 @@ static const config_block_t listen_spec = {
 	.free = free_listen,
 	.properties = {
 		{ "ssl", NESTED_SINGLE,
-			offsetof(uwsd_listen_t, ssl), &ssl_spec, NULL },
+			offsetof(uwsd_listen_t, ssl), &ssl_spec },
 		{ "request-timeout", INTEGER,
-			offsetof(uwsd_listen_t, request_timeout), NULL, NULL },
+			offsetof(uwsd_listen_t, request_timeout), NULL },
 		{ "transfer-timeout", INTEGER,
-			offsetof(uwsd_listen_t, transfer_timeout), NULL, NULL },
+			offsetof(uwsd_listen_t, transfer_timeout), NULL },
 		{ "idle-timeout", INTEGER,
-			offsetof(uwsd_listen_t, idle_timeout), NULL, NULL },
+			offsetof(uwsd_listen_t, idle_timeout), NULL },
 		ACTION_PROPERTIES(uwsd_listen_t),
 		{ 0 }
 	}
@@ -331,7 +330,7 @@ static const config_block_t toplevel_spec = {
 	.size = sizeof(uwsd_config_t),
 	.properties = {
 		{ "listen", NESTED_MULTIPLE,
-			offsetof(uwsd_config_t, listeners), &listen_spec, NULL },
+			offsetof(uwsd_config_t, listeners), &listen_spec },
 		{ 0 }
 	}
 };
@@ -514,68 +513,62 @@ config_parse_value(const char **input, const config_prop_t *prop, void *base)
 		*input = p;
 	}
 
-	if (prop->parse) {
-		if (!prop->parse(prop, base, buflen ? buf : NULL))
+	switch (prop->type) {
+	case STRING:
+		if (!buflen)
+			return parse_error("Expecting non-empty value");
+
+		char_ptr(prop, base) = strdup(buf);
+
+		break;
+
+	case BOOLEAN:
+		if (!buflen ||
+		    !strcmp(buf, "true") || !strcmp(buf, "yes") ||
+		    !strcmp(buf, "on") || !strcmp(buf, "enabled"))
+			bool_ptr(prop, base) = true;
+		else if (!strcmp(buf, "false") || !strcmp(buf, "no") ||
+		    !strcmp(buf, "off") || !strcmp(buf, "disabled"))
+			bool_ptr(prop, base) = false;
+		else
+			return parse_error("Expecting 'true', 'yes', 'on', 'enabled', 'false', 'no', 'off' or 'disabled'");
+
+		break;
+
+	case INTEGER:
+		n = strtol(buf, &e, 0);
+
+		if (e == buf || *e)
+			return parse_error("Expecting number");
+
+		int_ptr(prop, base) = n;
+
+		break;
+
+	case NESTED_SINGLE:
+		if (char_ptr(prop, base))
+			return parse_error("The '%s' property may only appear once within this block", prop->name);
+
+		/* fall through */
+
+	case NESTED_MULTIPLE:
+		obj = config_alloc_object(prop->nested, buflen ? buf : NULL);
+
+		if (!obj)
 			return false;
-	}
-	else {
-		switch (prop->type) {
-		case STRING:
-			if (!buflen)
-				return parse_error("Expecting non-empty value");
 
-			char_ptr(prop, base) = strdup(buf);
+		if (!config_parse_block(input, prop->nested, obj)) {
+			config_free_object(prop->nested, obj);
 
-			break;
-
-		case BOOLEAN:
-			if (!buflen ||
-			    !strcmp(buf, "true") || !strcmp(buf, "yes") ||
-			    !strcmp(buf, "on") || !strcmp(buf, "enabled"))
-				bool_ptr(prop, base) = true;
-			else if (!strcmp(buf, "false") || !strcmp(buf, "no") ||
-			    !strcmp(buf, "off") || !strcmp(buf, "disabled"))
-				bool_ptr(prop, base) = false;
-			else
-				return parse_error("Expecting 'true', 'yes', 'on', 'enabled', 'false', 'no', 'off' or 'disabled'");
-
-			break;
-
-		case INTEGER:
-			n = strtol(buf, &e, 0);
-
-			if (e == buf || *e)
-				return parse_error("Expecting number");
-
-			int_ptr(prop, base) = n;
-
-			break;
-
-		case NESTED_SINGLE:
-			if (char_ptr(prop, base))
-				return parse_error("The '%s' property may only appear once within this block", prop->name);
-
-			/* fall through */
-
-		case NESTED_MULTIPLE:
-			obj = config_alloc_object(prop->nested, buflen ? buf : NULL);
-
-			if (!obj)
-				return false;
-
-			if (!config_parse_block(input, prop->nested, obj)) {
-				config_free_object(prop->nested, obj);
-
-				return false;
-			}
-
-			if (prop->type == NESTED_SINGLE)
-				char_ptr(prop, base) = (char *)obj;
-			else
-				list_add_tail((struct list_head *)obj, list_ptr(prop, base));
-
-			return true;
+			return false;
 		}
+
+		if (prop->type == NESTED_SINGLE)
+			char_ptr(prop, base) = (char *)obj;
+		else
+			list_add_tail((struct list_head *)obj, list_ptr(prop, base));
+
+		return true;
 	}
 
 	return skipchar(input, ';') ? true : parse_error("Expecting ';'");
