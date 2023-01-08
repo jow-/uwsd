@@ -1386,7 +1386,7 @@ uwsd_http_state_request_header(uwsd_client_context_t *cl, uwsd_connection_state_
 	}
 
 	if (cl->state == STATE_CONN_IDLE) {
-		if (cl->http_version == 0x0100 || uwsd_http_header_contains(cl, "Connection", "close"))
+		if (cl->http_version < 0x0101 || uwsd_http_header_contains(cl, "Connection", "close"))
 			return client_free(cl, "closing connection");
 	}
 }
@@ -1454,7 +1454,7 @@ uwsd_http_state_response_send(uwsd_client_context_t *cl, uwsd_connection_state_t
 			return client_free(cl, "closing connection after HTTP error");
 
 		/* Close connection? */
-		if (cl->http_version == 0x0100 || uwsd_http_header_contains(cl, "Connection", "close"))
+		if (cl->http_version < 0x0101 || uwsd_http_header_contains(cl, "Connection", "close"))
 			return client_free(cl, "closing connection");
 
 		http_state_reset(cl, STATE_HTTP_REQUEST_METHOD);
@@ -1501,7 +1501,7 @@ uwsd_http_state_response_sendfile(uwsd_client_context_t *cl, uwsd_connection_sta
 
 	if (wlen == 0) {
 		/* Close connection? */
-		if (cl->http_version == 0x0100 || uwsd_http_header_contains(cl, "Connection", "close"))
+		if (cl->http_version < 0x0101 || uwsd_http_header_contains(cl, "Connection", "close"))
 			return client_free(cl, "closing connection");
 
 		http_state_reset(cl, STATE_HTTP_REQUEST_METHOD);
@@ -1631,6 +1631,9 @@ uwsd_http_state_downstream_send(uwsd_client_context_t *cl, uwsd_connection_state
 		cl->rxbuf.pos = cl->rxbuf.end;
 
 		if (cl->http.state == STATE_HTTP_CHUNK_DONE || cl->http.state == STATE_HTTP_REQUEST_DONE) {
+			if (cl->http_version < 0x0101 || uwsd_http_header_contains(cl, "Connection", "close"))
+				return client_free(cl, "closing connection");
+
 			http_state_reset(cl, STATE_HTTP_REQUEST_METHOD);
 			uwsd_state_transition(cl, STATE_CONN_IDLE);
 		}
