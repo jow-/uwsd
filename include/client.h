@@ -55,11 +55,11 @@ typedef struct uwsd_client_context {
 		struct sockaddr_in6 in6;
 	} sa_peer;
 	struct {
-		uint8_t data[8192];
+		uint8_t data[16384];
 		uint8_t *pos, *end, *sent;
 	} rxbuf;
 	struct {
-		uint8_t data[10 + 8192];
+		uint8_t data[10 + 16384];
 		uint8_t *pos, *end;
 	} txbuf;
 	uwsd_connection_state_t state;

@@ -91,7 +91,7 @@ typedef struct {
 		uint16_t type;
 		uint16_t len;
 		uint16_t datalen;
-		uint8_t data[8192];
+		uint8_t data[16384];
 	} buf;
 	uc_value_t *req, *hdr, *conn, *data, *subproto;
 } script_connection_t;
@@ -760,7 +760,7 @@ uc_script_reply(uc_vm_t *vm, size_t nargs)
 	}
 
 	for (p = buf->buf, n = printbuf_length(buf); n > 0; ) {
-		wlen = write((*conn)->ufd.fd, p, ssize_t_min(n, 8192));
+		wlen = write((*conn)->ufd.fd, p, ssize_t_min(n, 16384));
 
 		if (wlen == -1) {
 			if (errno == EINTR)
@@ -996,7 +996,7 @@ handle_request(struct uloop_fd *ufd, unsigned int events)
 {
 	script_connection_t *conn = container_of(ufd, script_connection_t, ufd);
 	ssize_t rlen, i, rem;
-	uint8_t buf[8192];
+	uint8_t buf[16384];
 
 	while (true) {
 		rlen = recv(ufd->fd, buf, sizeof(buf), 0);
