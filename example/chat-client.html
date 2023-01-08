@@ -1,0 +1,356 @@
+<!--
+	Example chat application to demonstate uwsd scripting capabilities.
+
+	In order to test this application, ensure that the uwsd server is running
+	with the shipped example configuration by invoking
+
+		./uwsd --config example/chat.conf
+
+	Once the uwsd server is started, navigate to <http://127.0.0.1:8080/> in
+	your browser to view the application.
+-->
+
+<html>
+	<head>
+		<meta charset="UTF-8">
+		<style type="text/css">
+			body {
+				font-family: sans-serif;
+				font-size: 14px;
+				margin: 3em auto;
+				max-width: 700px;
+			}
+
+			* {
+				box-sizing: border-box;
+			}
+
+			#output {
+				overflow: auto;
+				background: linear-gradient(90deg, #ccc 0%, #eee 50%, #ccc 100%);
+				border: 1px solid #000;
+				padding: .5em;
+				width: 100%;
+				height: 50vh;
+				min-height: 200px;
+			}
+
+			#input {
+				min-width: 400px;
+			}
+
+			#status {
+				font-size: 10px;
+				font-family: monospace;
+				margin-top: 1em;
+				color: #888;
+				text-align: right;
+			}
+
+			.message {
+				border: 1px solid #000;
+				box-shadow: 1px 1px 4px #999;
+				background: #fff;
+				color: #000;
+				padding: .5em;
+				border-radius: .5em;
+				margin: .25em;
+				display: flex;
+				font-family: monospace;
+			}
+
+			.message > * { margin: .125em .25em; line-height: 20px }
+			.message > .nick { font-weight: bold; }
+			.message > .nick:after { content: ": "; }
+			.message > .time { color: #888; font-size: 80%; }
+			.message.system { color: #888; background: #fefefe; }
+			.message.error { color: #f00; background: #feefef; }
+			.message.self { color: #47c; background: #efeffe; }
+
+			.message table {
+				border: 1px solid #aaa;
+				border-collapse: collapse;
+			}
+
+			.message table th,
+			.message table td {
+				border: 1px solid #aaa;
+				text-align: left;
+				font-size: 80%;
+				padding: .2em;
+			}
+		</style>
+		<script type="text/javascript">
+			let chatSocket;
+			let nickname;
+
+			function timestamp(date) {
+				return `${
+					(100 + date.getHours()).toString().substr(-2)
+				}:${
+					(100 + date.getMinutes()).toString().substr(-2)
+				}:${
+					(100 + date.getSeconds()).toString().substr(-2)
+				}`;
+			}
+
+			function htmlescape(text) {
+				let t = document.createTextNode(text);
+				let d = document.createElement('div');
+
+				d.appendChild(t);
+
+				return d.innerHTML;
+			}
+
+			function setNickname(name) {
+				nickname = name;
+
+				document.querySelector('#nickname').innerHTML = `Change nickname (<strong>${name}</strong>)`;
+			}
+
+			function addMessage(time, type, from, message) {
+				let d = new Date(time);
+				let e = document.createElement('div');
+				let timeEl, nickEl, bodyEl;
+
+				e.classList.add('message');
+
+				timeEl = e.appendChild(document.createElement('div'));
+				timeEl.classList.add('time');
+				timeEl.innerText = timestamp(d);
+
+				nickEl = e.appendChild(document.createElement('div'));
+				nickEl.classList.add('nick');
+
+				bodyEl = e.appendChild(document.createElement('div'));
+				bodyEl.classList.add('body');
+				bodyEl.innerHTML = message;
+
+				switch (type) {
+				case 'server-error':
+					e.classList.add('error');
+					nickEl.innerHTML = `<em>Server</em>`;
+					break;
+
+				case 'client-error':
+					e.classList.add('error');
+					nickEl.innerHTML = `<em></em>`;
+					nickEl.firstElementChild.innerText = nickname ?? '-';
+					break;
+
+				case 'server-message':
+					e.classList.add('system');
+					nickEl.innerHTML = `<em>Server</em>`;
+					break;
+
+				case 'client-message':
+					nickEl.innerText = from;
+
+					if (from == nickname)
+						e.classList.add('self');
+					break;
+
+				case 'client-status':
+					e.classList.add('system');
+					nickEl.style.display = 'none';
+					break;
+				}
+
+				let o = document.querySelector('#output');
+
+				o.insertBefore(e, o.lastElementChild);
+				o.scrollTo(0, o.scrollHeight);
+			}
+
+			function formatTime(time, now) {
+				let delta = ((now ?? Date.now()) - time) / 1000;
+				let s = '';
+
+				if (delta > 3600) {
+					s += `${(delta / 3600).toFixed(0)}h `;
+					delta %= 3600;
+				}
+
+				if (delta > 60) {
+					s += `${(delta / 60).toFixed(0)}m `;
+					delta %= 60;
+				}
+
+				s += `${delta}s`;
+
+				return s;
+			}
+
+			function addClientList(time, clients) {
+				var t = document.createElement('div');
+
+				t.innerHTML = `
+					<table>
+						<tr>
+							<th>Nickname</th>
+							<th>Joined</th>
+							<th>Seen</th>
+							<th>Messages sent</th>
+							<th>Bytes sent</th>
+						</tr>
+					</table>
+				`;
+
+				for (let client of clients) {
+					var tr = document.createElement('tr');
+
+					tr.innerHTML = `
+						<td>${htmlescape(client.nickname)}</td>
+						<td style="text-align:right">${formatTime(client.joined * 1000, time)}</td>
+						<td style="text-align:right">${formatTime(client.seen * 1000, time)}</td>
+						<td>${htmlescape(client.messages)}</td>
+						<td>${htmlescape(client.bytes)}</td>
+					`;
+
+					t.firstElementChild.appendChild(tr);
+				}
+
+				addMessage(time, 'server-message', null, t.innerHTML);
+			}
+
+			function sendMessage() {
+				let input = document.querySelector('#input');
+				let text = input.value.trim();
+
+				if (text.length == 0)
+					return;
+
+				chatSocket.send(JSON.stringify({
+					command: 'send-message',
+					value: text
+				}));
+
+				input.value = '';
+			}
+
+			function changeNickname() {
+				let nick = (prompt('Enter your desired nickname') ?? '').trim();
+
+				if (nick.length == 0)
+					return;
+
+				chatSocket.send(JSON.stringify({
+					command: 'set-nickname',
+					value: nick
+				}));
+			}
+
+			function queryUsers() {
+				chatSocket.send(JSON.stringify({
+					command: 'list-clients'
+				}));
+			}
+
+			function handleServerMessage(data) {
+				let msg;
+
+				try {
+					msg = JSON.parse(data);
+				}
+				catch (e) {
+					return addMessage({
+						type: 'client-error',
+						msg: `Unable to decode server message: <pre>${htmlescape(e)}</pre>`
+					});
+				}
+
+				switch (msg.type) {
+				case 'server-message':
+				case 'server-error':
+					addMessage(msg.time * 1000, msg.type, null, htmlescape(msg.msg));
+					break;
+
+				case 'server-status':
+					document.querySelector('#status').innerText = msg.msg;
+					break;
+
+				case 'client-message':
+				case 'client-error':
+					addMessage(msg.time ? msg.time * 1000 : Date.now(), msg.type, msg.from, htmlescape(msg.msg));
+					break;
+
+				case 'pong':
+					console.debug('Received server pong');
+					break;
+
+				case 'nickname-change':
+					setNickname(msg.nickname);
+					break;
+
+				case 'client-list':
+					addClientList(msg.time * 1000, msg.clients);
+					break;
+
+				default:
+					addMessage(Date.now(), 'client-error', null,
+						`Unrecognized server message: <pre>${htmlescape(JSON.stringify(msg, true, 2))}</pre>`);
+				}
+			}
+
+			function initChat() {
+				chatSocket = new WebSocket(
+					`${location.protocol == 'https:' ? 'wss' : 'ws'}://${location.host}/chat`,
+					'uwsd.example.chat');
+
+				chatSocket.onopen = (ev) => {
+					addMessage(Date.now(), 'client-status', null,
+						'Connection to chat server established');
+
+					// On reconnect try restoring our chosen nickname
+					if (nickname) {
+						chatSocket.send(JSON.stringify({
+							command: 'set-nickname',
+							value: nickname
+						}));
+					}
+
+				};
+
+				chatSocket.onerror = (ev) => {
+					addMessage(Date.now(), 'client-error', null,
+						'Unable to connect to the chat server! Make sure that the uwsd daemon is running and accepting connections.');
+				};
+
+				chatSocket.onmessage = (ev) => {
+					handleServerMessage(ev.data);
+				};
+
+				chatSocket.onclose = (ev) => {
+					addMessage(Date.now(), 'client-error', null,
+						`Connection to chat server has been closed: ${ev.code} (${ev.reason || 'Unspecified reason'})`);
+
+					chatSocket.close();
+
+					setTimeout(initChat, 1000);
+				};
+			}
+
+			// Send regular keepalive messages
+			window.setInterval(function() {
+				chatSocket.send(JSON.stringify({ command: 'ping' }));
+			}, 10000);
+		</script>
+	</head>
+	<body onload="initChat()">
+		<h2>Welcome to the uwsd example chat application.</h2>
+		<p>
+			This simple JavaScript chat application serves as an example for the uwsd
+			server side WebSocket scripting capabilities.
+		</p>
+
+		<div id="output">
+			<div id="status">Awaiting server status...</div>
+		</div>
+		<hr>
+		<input id="input" type="text" placeholder="Enter message…" onkeypress="if (event.key == 'Enter') { sendMessage(); event.preventDefault() }"> <button onclick="sendMessage()">Send</button>
+		<hr>
+		<button onclick="changeNickname()" id="nickname">Set nickname…</button>
+		<button onclick="queryUsers()">List chat clients</button>
+	</body>
+</html>
