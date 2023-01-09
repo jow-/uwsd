@@ -101,9 +101,14 @@ uwsd_http_reply_buffer(void *buf, size_t buflen, double http_version,
 	return len;
 }
 
+#define uwsd_http_error_send(cl, code, reason, msg, ...)				\
+	do {																\
+		uwsd_http_reply(cl, code, reason, msg, ##__VA_ARGS__, NULL);	\
+		uwsd_http_reply_send(cl, true);									\
+	} while(0)
+
 __hidden char *uwsd_http_header_lookup(uwsd_client_context_t *, const char *);
 __hidden bool uwsd_http_header_contains(uwsd_client_context_t *, const char *, const char *);
-__hidden void uwsd_http_error_send(uwsd_client_context_t *, uint16_t, const char *, const char *, ...);
 
 __hidden bool uwsd_http_reply_send(uwsd_client_context_t *, bool);
 

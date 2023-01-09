@@ -938,10 +938,20 @@ uwsd_http_reply(uwsd_client_context_t *cl, uint16_t code,
 	uwsd_http_info(cl, "%c %03hu %s", (code < 400) ? 'R' : 'E', code, reason ? reason : "-");
 
 	va_start(ap, msg);
+
+	/* For HEAD requests we must not emit a body, consume away the msg format
+	 * related arguments to only leave the additional headers in the ap_list,
+	 * then replace the format string with the empty body marker... */
+	if (cl->request_method == HTTP_HEAD) {
+		vsnprintf(NULL, 0, msg, ap);
+		msg = UWSD_HTTP_REPLY_EMPTY;
+	}
+
 	len = uwsd_http_reply_buffer_varg(
 		(char *)cl->rxbuf.data, sizeof(cl->rxbuf.data),
 		cl->http_version == 0x0101 ? 1.1 : 1.0,
-		code, reason, msg ? msg : "\127", ap);
+		code, reason, msg ? msg : UWSD_HTTP_REPLY_EMPTY, ap);
+
 	va_end(ap);
 
 	cl->rxbuf.pos = cl->rxbuf.data;
@@ -1009,49 +1019,6 @@ uwsd_http_reply_buffer_varg(char *buf, size_t buflen, double http_version,
 	}
 
 	return pos - buf;
-}
-
-__hidden void
-uwsd_http_error_send(uwsd_client_context_t *cl, uint16_t code, const char *reason, const char *msg, ...)
-{
-	uint16_t version = cl->http_version ? cl->http_version : 0x0100;
-	va_list ap;
-	size_t len;
-
-	uwsd_http_info(cl, "E %03hu %s", code, reason ? reason : "-");
-
-	va_start(ap, msg);
-
-	len = snprintf((char *)cl->rxbuf.data, sizeof(cl->rxbuf.data),
-		"HTTP/%hu.%hu %hu %s\r\n"
-		"Connection: close\r\n",
-		version >> 8,
-		version & 0xff,
-		code, reason
-	);
-
-	if (msg && cl->request_method != HTTP_HEAD) {
-		va_start(ap, msg);
-		len += snprintf((char *)cl->rxbuf.data + len, sizeof(cl->rxbuf.data) - len,
-			"Content-Type: text/plain\r\n"
-			"Content-Length: %d\r\n\r\n",
-			vsnprintf("", 0, msg, ap)
-		);
-		va_end(ap);
-
-		va_start(ap, msg);
-		len += vsnprintf((char *)cl->rxbuf.data + len, sizeof(cl->rxbuf.data) - len, msg, ap);
-		va_end(ap);
-	}
-	else {
-		len += snprintf((char *)cl->rxbuf.data + len, sizeof(cl->rxbuf.data) - len, "\r\n");
-	}
-
-	cl->rxbuf.pos = cl->rxbuf.data;
-	cl->rxbuf.end = cl->rxbuf.data + len;
-
-	if (uwsd_http_reply_send(cl, true))
-		client_free(cl, "%hu (%s)", code, reason ? reason : "-");
 }
 
 static char *
