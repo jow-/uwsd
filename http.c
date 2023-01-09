@@ -1145,6 +1145,9 @@ resolve_action(uwsd_client_context_t *cl)
 		cl->auths = &cl->listener->auth;
 
 	resolve_match(cl, &cl->listener->matches);
+
+	if (cl->action && cl->action->type == UWSD_ACTION_BACKEND)
+		cl->action = cl->action->data.action;
 }
 
 static bool

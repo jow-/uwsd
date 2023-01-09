@@ -38,12 +38,14 @@ typedef enum {
 	UWSD_ACTION_FILE,
 	UWSD_ACTION_DIRECTORY,
 	UWSD_ACTION_SCRIPT,
+	UWSD_ACTION_BACKEND,
 	UWSD_ACTION_TCP_PROXY,
 	UWSD_ACTION_UDP_PROXY,
 	UWSD_ACTION_UNIX_PROXY,
 } uwsd_action_type_t;
 
-typedef struct {
+typedef struct uwsd_action {
+	struct list_head list;
 	uwsd_action_type_t type;
 	union {
 		char *file;
@@ -61,6 +63,7 @@ typedef struct {
 			bool binary;
 			char *subprotocol;
 		} proxy;
+		struct uwsd_action *action;
 	} data;
 } uwsd_action_t;
 
@@ -81,6 +84,12 @@ typedef struct {
 		char *value;
 	} data;
 } uwsd_match_t;
+
+typedef struct {
+	struct list_head list;
+	char *name;
+	uwsd_action_t *default_action;
+} uwsd_backend_t;
 
 typedef struct {
 	struct list_head list;

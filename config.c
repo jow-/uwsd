@@ -76,6 +76,10 @@ property_ptr(const config_prop_t *prop, void *base)
 #define list_ptr(prop, base) (struct list_head *)property_ptr(prop, base)
 
 
+static bool parse_backend(void *obj, const char *label);
+static bool validate_backend(void *obj);
+static void free_backend(void *obj);
+
 static bool parse_listen(void *obj, const char *label);
 static bool validate_listen(void *obj);
 static void free_listen(void *obj);
@@ -88,6 +92,7 @@ static void free_match(void *obj);
 static bool parse_serve_file(void *obj, const char *label);
 static bool parse_serve_directory(void *obj, const char *label);
 static bool parse_run_script(void *obj, const char *label);
+static bool parse_use_backend(void *obj, const char *label);
 static bool parse_proxy_tcp(void *obj, const char *label);
 static bool parse_proxy_udp(void *obj, const char *label);
 static bool parse_proxy_unix(void *obj, const char *label);
@@ -119,29 +124,35 @@ static const config_block_t ssl_spec = {
 	}
 };
 
-#define ACTION_PROPERTIES(type)										\
+#define MATCH_PROPERTIES(type)										\
 	{ "match-protocol", NESTED_MULTIPLE,							\
 		offsetof(type, matches), &match_protocol_spec },			\
 	{ "match-hostname", NESTED_MULTIPLE,							\
 		offsetof(type, matches), &match_hostname_spec },			\
 	{ "match-path", NESTED_MULTIPLE,								\
 		offsetof(type, matches), &match_path_spec },				\
+	{ "auth-basic", NESTED_MULTIPLE,								\
+		offsetof(type, auth), &auth_basic_spec },					\
+	{ "auth-mtls", NESTED_MULTIPLE,									\
+		offsetof(type, auth), &auth_mtls_spec }
+
+#define ACTION_PROPERTIES(type)										\
 	{ "serve-file", NESTED_SINGLE,									\
 		offsetof(type, default_action), &serve_file_spec },			\
 	{ "serve-directory", NESTED_SINGLE,								\
 		offsetof(type, default_action), &serve_directory_spec },	\
 	{ "run-script", NESTED_SINGLE,									\
 		offsetof(type, default_action), &run_script_spec },			\
+	{ "use-backend", NESTED_SINGLE,									\
+		offsetof(type, default_action), &use_backend_spec },		\
 	{ "proxy-tcp", NESTED_SINGLE,									\
 		offsetof(type, default_action), &proxy_tcp_spec },			\
 	{ "proxy-udp", NESTED_SINGLE,									\
 		offsetof(type, default_action), &proxy_udp_spec },			\
 	{ "proxy-unix", NESTED_SINGLE,									\
-		offsetof(type, default_action), &proxy_unix_spec },			\
-	{ "auth-basic", NESTED_MULTIPLE,								\
-		offsetof(type, auth), &auth_basic_spec },					\
-	{ "auth-mtls", NESTED_MULTIPLE,									\
-		offsetof(type, auth), &auth_mtls_spec }
+		offsetof(type, default_action), &proxy_unix_spec }
+
+static const config_block_t backend_spec;
 
 static const config_block_t match_protocol_spec;
 static const config_block_t match_hostname_spec;
@@ -150,6 +161,7 @@ static const config_block_t match_path_spec;
 static const config_block_t serve_file_spec;
 static const config_block_t serve_directory_spec;
 static const config_block_t run_script_spec;
+static const config_block_t use_backend_spec;
 static const config_block_t proxy_tcp_spec;
 static const config_block_t proxy_udp_spec;
 static const config_block_t proxy_unix_spec;
@@ -157,11 +169,23 @@ static const config_block_t proxy_unix_spec;
 static const config_block_t auth_basic_spec;
 static const config_block_t auth_mtls_spec;
 
+static const config_block_t backend_spec = {
+	.size = sizeof(uwsd_backend_t),
+	.init = parse_backend,
+	.validate = validate_backend,
+	.free = free_backend,
+	.properties = {
+		ACTION_PROPERTIES(uwsd_backend_t),
+		{ 0 }
+	}
+};
+
 static const config_block_t match_protocol_spec = {
 	.size = sizeof(uwsd_match_t),
 	.init = parse_protocol_match,
 	.free = free_match,
 	.properties = {
+		MATCH_PROPERTIES(uwsd_match_t),
 		ACTION_PROPERTIES(uwsd_match_t),
 		{ 0 }
 	}
@@ -172,6 +196,7 @@ static const config_block_t match_hostname_spec = {
 	.init = parse_hostname_match,
 	.free = free_match,
 	.properties = {
+		MATCH_PROPERTIES(uwsd_match_t),
 		ACTION_PROPERTIES(uwsd_match_t),
 		{ 0 }
 	}
@@ -182,6 +207,7 @@ static const config_block_t match_path_spec = {
 	.init = parse_path_match,
 	.free = free_match,
 	.properties = {
+		MATCH_PROPERTIES(uwsd_match_t),
 		ACTION_PROPERTIES(uwsd_match_t),
 		{ 0 }
 	}
@@ -210,6 +236,16 @@ static const config_block_t serve_directory_spec = {
 static const config_block_t run_script_spec = {
 	.size = sizeof(uwsd_action_t),
 	.init = parse_run_script,
+	.validate = validate_action,
+	.free = free_action,
+	.properties = {
+		{ 0 }
+	}
+};
+
+static const config_block_t use_backend_spec = {
+	.size = sizeof(uwsd_action_t),
+	.init = parse_use_backend,
 	.validate = validate_action,
 	.free = free_action,
 	.properties = {
@@ -321,6 +357,7 @@ static const config_block_t listen_spec = {
 			offsetof(uwsd_listen_t, transfer_timeout), NULL },
 		{ "idle-timeout", INTEGER,
 			offsetof(uwsd_listen_t, idle_timeout), NULL },
+		MATCH_PROPERTIES(uwsd_listen_t),
 		ACTION_PROPERTIES(uwsd_listen_t),
 		{ 0 }
 	}
@@ -329,6 +366,8 @@ static const config_block_t listen_spec = {
 static const config_block_t toplevel_spec = {
 	.size = sizeof(uwsd_config_t),
 	.properties = {
+		{ "backend", NESTED_MULTIPLE,
+			offsetof(uwsd_config_t, backends), &backend_spec },
 		{ "listen", NESTED_MULTIPLE,
 			offsetof(uwsd_config_t, listeners), &listen_spec },
 		{ 0 }
@@ -751,6 +790,24 @@ parse_run_script(void *obj, const char *label)
 }
 
 static bool
+parse_use_backend(void *obj, const char *label)
+{
+	uwsd_action_t *action = obj;
+	uwsd_backend_t *backend;
+
+	action->type = UWSD_ACTION_BACKEND;
+
+	list_for_each_entry(backend, &config->backends, list)
+		if (!strcmp(backend->name, label))
+			action->data.action = backend->default_action;
+
+	if (!action->data.action)
+		return parse_error("Unknown backend '%s' referenced by 'use-backend' property", label);
+
+	return true;
+}
+
+static bool
 parse_hostname_port(const char *label, const char *prop, char **hostname, uint16_t *port)
 {
 	int labellen, n;
@@ -868,6 +925,9 @@ validate_action(void *obj)
 			return parse_error("Invalid idle-timeout");
 
 		break;
+
+	case UWSD_ACTION_BACKEND:
+		break;
 	}
 
 	return true;
@@ -885,6 +945,7 @@ free_action(void *obj)
 	case UWSD_ACTION_TCP_PROXY:  return free(action->data.proxy.hostname);
 	case UWSD_ACTION_UDP_PROXY:  return free(action->data.proxy.hostname);
 	case UWSD_ACTION_UNIX_PROXY: return free(action->data.proxy.hostname);
+	case UWSD_ACTION_BACKEND:    return;
 	}
 }
 
@@ -963,6 +1024,47 @@ free_auth(void *obj)
 	case UWSD_AUTH_MTLS:
 		break;
 	}
+}
+
+
+static bool
+parse_backend(void *obj, const char *label)
+{
+	uwsd_backend_t *backend = obj;
+
+	if (!label || !*label)
+		return parse_error("Expecting name for 'backend' property");
+
+	backend->name = xstrdup(label);
+
+	return true;
+}
+
+static bool
+validate_backend(void *obj)
+{
+	uwsd_backend_t *backend = obj;
+	uwsd_backend_t *other;
+
+	if (!backend->default_action)
+		return parse_error("Backend declares no action directive");
+
+	if (backend->default_action->type == UWSD_ACTION_BACKEND)
+		return parse_error("The 'use-backend' property may not be used within `backend` directives");
+
+	list_for_each_entry(other, &config->backends, list)
+		if (other != backend && !strcmp(other->name, backend->name))
+			return parse_error("Name '%s' already used by another backend directive", backend->name);
+
+	return true;
+}
+
+static void
+free_backend(void *obj)
+{
+	uwsd_backend_t *backend = obj;
+
+	free(backend->name);
 }
 
 

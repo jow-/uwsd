@@ -32,6 +32,7 @@
 
 typedef struct {
 	char *certificate_directory;
+	struct list_head backends;
 	struct list_head listeners;
 } uwsd_config_t;
 
