@@ -44,6 +44,7 @@ static LIST_HEAD(requests);
 typedef enum {
 	UWSD_SCRIPT_DATA_PEER_ADDR,
 	UWSD_SCRIPT_DATA_LOCAL_ADDR,
+	UWSD_SCRIPT_DATA_SSL_CIPER,
 	UWSD_SCRIPT_DATA_X509_PEER_ISSUER,
 	UWSD_SCRIPT_DATA_X509_PEER_SUBJECT,
 	UWSD_SCRIPT_DATA_HTTP_VERSION,
@@ -672,7 +673,7 @@ uc_script_request_info(uc_vm_t *vm, size_t nargs)
 	const char *fields[] = {
 		"local_address", "local_port",
 		"peer_address", "peer_port",
-		"x509_peer_issuer", "x509_peer_subject"
+		"ssl", "ssl_cipher", "x509_peer_issuer", "x509_peer_subject"
 	};
 
 	if (!conn || !*conn)
@@ -899,6 +900,13 @@ handle_tlv(script_connection_t *conn, uint16_t type, uint16_t len, uint8_t *data
 			ucv_object_add(conn->req, "peer_address", ucv_string_new(addr));
 			ucv_object_add(conn->req, "peer_port", ucv_uint64_new(u16));
 		}
+
+		break;
+
+	case UWSD_SCRIPT_DATA_SSL_CIPER:
+		ucv_object_add(conn->req, "ssl", ucv_boolean_new(true));
+		ucv_object_add(conn->req, "ssl_cipher",
+			ucv_string_new_length((char *)data, len));
 
 		break;
 
@@ -1279,7 +1287,7 @@ __hidden bool
 uwsd_script_connect(uwsd_client_context_t *cl, const char *acceptkey)
 {
 	uint16_t tv[cl->http_num_headers], lv[cl->http_num_headers];
-	struct iovec iov[(8 + cl->http_num_headers) * 3];
+	struct iovec iov[(9 + cl->http_num_headers) * 3];
 	struct iovec *iop = iov;
 	ssize_t total = 0;
 	const char *s;
@@ -1298,6 +1306,11 @@ uwsd_script_connect(uwsd_client_context_t *cl, const char *acceptkey)
 	}
 
 	if (cl->listener->ssl) {
+		s = uwsd_ssl_cipher_name(&cl->downstream);
+
+		if (s)
+			total += static_tlv(&iop, UWSD_SCRIPT_DATA_SSL_CIPER, strlen(s), s);
+
 		s = uwsd_ssl_peer_issuer_name(&cl->downstream);
 
 		if (s)

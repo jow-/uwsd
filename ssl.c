@@ -648,6 +648,14 @@ uwsd_ssl_close(uwsd_connection_t *conn)
 }
 
 __hidden const char *
+uwsd_ssl_cipher_name(uwsd_connection_t *conn)
+{
+	SSL *ssl = conn->ssl;
+
+	return SSL_get_cipher(ssl);
+}
+
+__hidden const char *
 uwsd_ssl_peer_subject_name(uwsd_connection_t *conn)
 {
 	SSL *ssl = conn->ssl;
