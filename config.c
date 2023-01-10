@@ -120,6 +120,8 @@ static const config_block_t ssl_spec = {
 			offsetof(uwsd_ssl_t, certificate), NULL },
 		{ "certificate-directory", STRING,
 			offsetof(uwsd_ssl_t, certificate_directory), NULL },
+		{ "protocols", STRING,
+			offsetof(uwsd_ssl_t, protocols), NULL },
 		{ "ciphers", STRING,
 			offsetof(uwsd_ssl_t, ciphers), NULL },
 		{ 0 }

@@ -91,9 +91,11 @@ servername_cb(SSL *ssl, int *al, void *arg)
 }
 
 static SSL_CTX *
-ssl_create_context(void)
+ssl_create_context(const char *protocols, const char *ciphers)
 {
 	SSL_CTX *tls_ctx = NULL;
+	const char *p;
+	long options;
 
 	if (!ssl_initialized) {
 		SSL_load_error_strings();
@@ -104,26 +106,66 @@ ssl_create_context(void)
 
 	tls_ctx = SSL_CTX_new(TLS_method());
 
-	if (!tls_ctx)
-		goto err;
+	if (!tls_ctx) {
+		ssl_perror("Unable to allocate TLS context");
 
-	SSL_CTX_set_options(tls_ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
+		return NULL;
+	}
+
 	SSL_CTX_set_default_verify_paths(tls_ctx);
 	SSL_CTX_set_session_cache_mode(tls_ctx, SSL_SESS_CACHE_CLIENT);
 	SSL_CTX_set_session_id_context(tls_ctx, (const unsigned char *)"1", 1);
 
-#if 0
-	SSL_CTX_set_cipher_list(tls_ctx, ssl_tlsciphers);
-#endif
+	if (protocols) {
+		options = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 |
+		          SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 |
+		          SSL_OP_NO_TLSv1_2 | SSL_OP_NO_TLSv1_3;
+
+		for (protocols += strspn(protocols, " \t\r\n"); *protocols; ) {
+			p = protocols + strcspn(protocols, " \t\r\n");
+
+			if (!strspncmp(protocols, p, "SSLv2")) {
+				options &= ~SSL_OP_NO_SSLv2;
+			}
+			else if (!strspncmp(protocols, p, "SSLv3")) {
+				options &= ~SSL_OP_NO_SSLv3;
+			}
+			else if (!strspncmp(protocols, p, "TLSv1")) {
+				options &= ~SSL_OP_NO_TLSv1;
+			}
+			else if (!strspncmp(protocols, p, "TLSv1.1")) {
+				options &= ~SSL_OP_NO_TLSv1_1;
+			}
+			else if (!strspncmp(protocols, p, "TLSv1.2")) {
+				options &= ~SSL_OP_NO_TLSv1_2;
+			}
+			else if (!strspncmp(protocols, p, "TLSv1.3")) {
+				options &= ~SSL_OP_NO_TLSv1_3;
+			}
+			else {
+				uwsd_ssl_err(NULL, "Unrecognized SSL protocol '%.*s'", (int)(p - protocols), protocols);
+				SSL_CTX_free(tls_ctx);
+
+				return NULL;
+			}
+
+			protocols = p + strspn(p, " \t\r\n");
+		}
+	}
+	else {
+		options = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3;
+	}
+
+	SSL_CTX_set_options(tls_ctx, options);
+
+	if (ciphers && !SSL_CTX_set_cipher_list(tls_ctx, ciphers)) {
+		ssl_perror("Unable to configure cipher list '%s'", ciphers);
+		SSL_CTX_free(tls_ctx);
+
+		return NULL;
+	}
 
 	return tls_ctx;
-
-err:
-	SSL_CTX_free(tls_ctx);
-
-	ssl_perror("Unable to initialize TLS context");
-
-	return NULL;
 }
 
 static const char *
@@ -279,18 +321,11 @@ static bool
 ssl_create_context_from_pem(uwsd_ssl_t *ctx, FILE *pkey_fp, const char *pkey_path,
                                              FILE *cert_fp, const char *cert_path)
 {
-	SSL_CTX *ssl_ctx = ssl_create_context();
+	SSL_CTX *ssl_ctx = ssl_create_context(ctx->protocols, ctx->ciphers);
 	X509_NAME *n, *i;
 
 	if (!ssl_ctx)
 		return false;
-
-	if (ctx->ciphers && !SSL_CTX_set_cipher_list(ssl_ctx, ctx->ciphers)) {
-		ssl_perror("Unable to configure cipher list '%s'", ctx->ciphers);
-		SSL_CTX_free(ssl_ctx);
-
-		return false;
-	}
 
 	if (!ssl_load_pem_privkey(ssl_ctx, pkey_fp, pkey_path) ||
 	    !ssl_load_pem_certificates(ssl_ctx, cert_fp, cert_path)) {
