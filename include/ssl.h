@@ -27,7 +27,7 @@ typedef struct uwsd_connection uwsd_connection_t;
 
 typedef struct {
 	bool verify_peer;
-	char *private_key, *certificate, *certificate_directory;
+	char *private_key, *certificate, *certificate_directory, *ciphers;
 	struct {
 		SSL_CTX **entries;
 		size_t count;

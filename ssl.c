@@ -285,6 +285,13 @@ ssl_create_context_from_pem(uwsd_ssl_t *ctx, FILE *pkey_fp, const char *pkey_pat
 	if (!ssl_ctx)
 		return false;
 
+	if (ctx->ciphers && !SSL_CTX_set_cipher_list(ssl_ctx, ctx->ciphers)) {
+		ssl_perror("Unable to configure cipher list '%s'", ctx->ciphers);
+		SSL_CTX_free(ssl_ctx);
+
+		return false;
+	}
+
 	if (!ssl_load_pem_privkey(ssl_ctx, pkey_fp, pkey_path) ||
 	    !ssl_load_pem_certificates(ssl_ctx, cert_fp, cert_path)) {
 
