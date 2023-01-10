@@ -19,8 +19,6 @@
 
 #include <sys/uio.h>
 
-#include <openssl/ssl.h>
-
 
 typedef struct uwsd_client_context uwsd_client_context_t;
 typedef struct uwsd_connection uwsd_connection_t;
@@ -30,7 +28,7 @@ typedef struct {
 	char *private_key, *certificate, *certificate_directory;
 	char *protocols, *ciphers;
 	struct {
-		SSL_CTX **entries;
+		void **entries;
 		size_t count;
 	} contexts;
 } uwsd_ssl_t;
