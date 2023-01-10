@@ -191,6 +191,8 @@
 							<th>Nickname</th>
 							<th>Joined</th>
 							<th>Seen</th>
+							<th>SSL</th>
+							<th>IP</th>
 							<th>Messages sent</th>
 							<th>Bytes sent</th>
 						</tr>
@@ -204,6 +206,8 @@
 						<td>${htmlescape(client.nickname)}</td>
 						<td style="text-align:right">${formatTime(client.joined * 1000, time)}</td>
 						<td style="text-align:right">${formatTime(client.seen * 1000, time)}</td>
+						<td>${client.conninfo.ssl ? 'yes' : 'no'}</td>
+						<td>${htmlescape(client.conninfo.peer_address)}</td>
 						<td>${htmlescape(client.messages)}</td>
 						<td>${htmlescape(client.bytes)}</td>
 					`;

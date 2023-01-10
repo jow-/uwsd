@@ -58,7 +58,8 @@ export function onConnect(connection, protocols)
 		messages: 0,
 		seen: time(),
 		joined: time(),
-		nickname: `Anonymous_${match(connection, /0x[[:xdigit:]]*([[:xdigit:]]{4})/)?.[1]}`
+		nickname: `Anonymous_${match(connection, /0x[[:xdigit:]]*([[:xdigit:]]{4})/)?.[1]}`,
+		conninfo: connection.info()
 	};
 
 	// Send nickname notification, followed by greeting message
@@ -162,16 +163,6 @@ export function onData(connection, data, final)
 		break;
 
 	case 'list-clients':
-		// Format list of connected clients
-		let reply = `Connected clients:\n`;
-
-		for (let key, conn in connected_clients) {
-			let cctx = conn.data();
-
-			reply += sprintf('\t%20s  %5ds ago  %d messages\n',
-				cctx.nickname, time() - cctx.seen, cctx.messages);
-		}
-
 		// Send back to requesting client
 		unicast(connection, {
 			type: 'client-list',
