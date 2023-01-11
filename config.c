@@ -230,6 +230,8 @@ static const config_block_t serve_file_spec = {
 	.validate = validate_action,
 	.free = free_action,
 	.properties = {
+		{ "content-type", STRING,
+			offsetof(uwsd_action_t, data.file.content_type), { 0 } },
 		{ 0 }
 	}
 };
@@ -797,7 +799,7 @@ parse_serve_file(void *obj, const char *label)
 
 	action->type = UWSD_ACTION_FILE;
 
-	return check_path(label, false, &action->data.file);
+	return check_path(label, false, &action->data.file.path);
 }
 
 static bool
@@ -928,16 +930,16 @@ validate_action(void *obj)
 
 	switch (action->type) {
 	case UWSD_ACTION_FILE:
-		if (stat(action->data.file, &s))
-			return parse_error("Failed to stat '%s': %m", action->data.file);
+		if (stat(action->data.file.path, &s))
+			return parse_error("Failed to stat '%s': %m", action->data.file.path);
 
 		if (!S_ISREG(s.st_mode))
-			return parse_error("Path '%s' exists but is not a regular file", action->data.file);
+			return parse_error("Path '%s' exists but is not a regular file", action->data.file.path);
 
 		break;
 
 	case UWSD_ACTION_DIRECTORY:
-		if (stat(action->data.file, &s))
+		if (stat(action->data.directory, &s))
 			return parse_error("Failed to stat '%s': %m", action->data.directory);
 
 		if (!S_ISDIR(s.st_mode))
@@ -975,7 +977,7 @@ free_action(void *obj)
 	uwsd_action_t *action = obj;
 
 	switch (action->type) {
-	case UWSD_ACTION_FILE:       return free(action->data.file);
+	case UWSD_ACTION_FILE:       return free(action->data.file.path);
 	case UWSD_ACTION_DIRECTORY:  return free(action->data.directory);
 	case UWSD_ACTION_SCRIPT:     return uwsd_script_free(action);
 	case UWSD_ACTION_TCP_PROXY:  return free(action->data.proxy.hostname);

@@ -48,7 +48,10 @@ typedef struct uwsd_action {
 	struct list_head list;
 	uwsd_action_type_t type;
 	union {
-		char *file;
+		struct {
+			char *path;
+			char *content_type;
+		} file;
 		char *directory;
 		struct {
 			struct uloop_timeout timeout;

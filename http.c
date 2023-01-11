@@ -1025,7 +1025,7 @@ static char *
 determine_path(uwsd_client_context_t *cl)
 {
 	uwsd_action_t *action = cl->action;
-	char *dst = (action->type == UWSD_ACTION_FILE) ? action->data.file : action->data.directory;
+	char *dst = (action->type == UWSD_ACTION_FILE) ? action->data.file.path : action->data.directory;
 	size_t pfx_len = strlen(cl->prefix);
 	char *url = NULL, *path = NULL, *base = NULL;
 	size_t req_len = 0;
@@ -1178,6 +1178,7 @@ http_file_serve(uwsd_client_context_t *cl)
 {
 	char szbuf[sizeof("18446744073709551615")];
 	char *path = determine_path(cl);
+	const char *mimetype = NULL;
 	struct stat s;
 
 	if (cl->request_method != HTTP_GET && cl->request_method != HTTP_HEAD)
@@ -1216,8 +1217,14 @@ http_file_serve(uwsd_client_context_t *cl)
 	{
 		snprintf(szbuf, sizeof(szbuf), "%zu", (size_t)s.st_size);
 
+		if (cl->action->type == UWSD_ACTION_FILE)
+			mimetype = cl->action->data.file.content_type;
+
+		if (!mimetype || !*mimetype)
+			mimetype = uwsd_file_mime_lookup(path);
+
 		uwsd_http_reply(cl, 200, "OK", UWSD_HTTP_REPLY_EMPTY,
-			"Content-Type", uwsd_file_mime_lookup(path),
+			"Content-Type", mimetype,
 			"Content-Length", szbuf,
 			"ETag", uwsd_file_mktag(&s),
 			"Last-Modified", uwsd_file_unix2date(s.st_mtime),
