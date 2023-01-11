@@ -36,6 +36,7 @@ typedef enum {
 	STRING,
 	BOOLEAN,
 	INTEGER,
+	ENUM,
 	NESTED_SINGLE,
 	NESTED_MULTIPLE,
 } config_type_t;
@@ -43,12 +44,18 @@ typedef enum {
 typedef struct config_block config_block_t;
 typedef struct config_prop config_prop_t;
 
+#define VALUES(...) { .values = (const char *[]){ __VA_ARGS__, NULL } }
+#define SUBSPEC(obj) { .nested = &obj }
+
 
 typedef struct config_prop {
 	const char *name;
 	config_type_t type;
 	size_t offset;
-	const config_block_t *nested;
+	union {
+		const config_block_t *nested;
+		const char **values;
+	} data;
 } config_prop_t;
 
 typedef struct config_block {
@@ -113,48 +120,48 @@ static const config_block_t ssl_spec = {
 	.free = free_ssl,
 	.properties = {
 		{ "verify-peer", BOOLEAN,
-			offsetof(uwsd_ssl_t, verify_peer), NULL },
+			offsetof(uwsd_ssl_t, verify_peer), { 0 } },
 		{ "private-key", STRING,
-			offsetof(uwsd_ssl_t, private_key), NULL },
+			offsetof(uwsd_ssl_t, private_key), { 0 } },
 		{ "certificate", STRING,
-			offsetof(uwsd_ssl_t, certificate), NULL },
+			offsetof(uwsd_ssl_t, certificate), { 0 } },
 		{ "certificate-directory", STRING,
-			offsetof(uwsd_ssl_t, certificate_directory), NULL },
+			offsetof(uwsd_ssl_t, certificate_directory), { 0 } },
 		{ "protocols", STRING,
-			offsetof(uwsd_ssl_t, protocols), NULL },
+			offsetof(uwsd_ssl_t, protocols), { 0 } },
 		{ "ciphers", STRING,
-			offsetof(uwsd_ssl_t, ciphers), NULL },
+			offsetof(uwsd_ssl_t, ciphers), { 0 } },
 		{ 0 }
 	}
 };
 
-#define MATCH_PROPERTIES(type)										\
-	{ "match-protocol", NESTED_MULTIPLE,							\
-		offsetof(type, matches), &match_protocol_spec },			\
-	{ "match-hostname", NESTED_MULTIPLE,							\
-		offsetof(type, matches), &match_hostname_spec },			\
-	{ "match-path", NESTED_MULTIPLE,								\
-		offsetof(type, matches), &match_path_spec },				\
-	{ "auth-basic", NESTED_MULTIPLE,								\
-		offsetof(type, auth), &auth_basic_spec },					\
-	{ "auth-mtls", NESTED_MULTIPLE,									\
-		offsetof(type, auth), &auth_mtls_spec }
+#define MATCH_PROPERTIES(type)											\
+	{ "match-protocol", NESTED_MULTIPLE,								\
+		offsetof(type, matches), SUBSPEC(match_protocol_spec) },		\
+	{ "match-hostname", NESTED_MULTIPLE,								\
+		offsetof(type, matches), SUBSPEC(match_hostname_spec) },		\
+	{ "match-path", NESTED_MULTIPLE,									\
+		offsetof(type, matches), SUBSPEC(match_path_spec) },			\
+	{ "auth-basic", NESTED_MULTIPLE,									\
+		offsetof(type, auth), SUBSPEC(auth_basic_spec) },				\
+	{ "auth-mtls", NESTED_MULTIPLE,										\
+		offsetof(type, auth), SUBSPEC(auth_mtls_spec) }
 
-#define ACTION_PROPERTIES(type)										\
-	{ "serve-file", NESTED_SINGLE,									\
-		offsetof(type, default_action), &serve_file_spec },			\
-	{ "serve-directory", NESTED_SINGLE,								\
-		offsetof(type, default_action), &serve_directory_spec },	\
-	{ "run-script", NESTED_SINGLE,									\
-		offsetof(type, default_action), &run_script_spec },			\
-	{ "use-backend", NESTED_SINGLE,									\
-		offsetof(type, default_action), &use_backend_spec },		\
-	{ "proxy-tcp", NESTED_SINGLE,									\
-		offsetof(type, default_action), &proxy_tcp_spec },			\
-	{ "proxy-udp", NESTED_SINGLE,									\
-		offsetof(type, default_action), &proxy_udp_spec },			\
-	{ "proxy-unix", NESTED_SINGLE,									\
-		offsetof(type, default_action), &proxy_unix_spec }
+#define ACTION_PROPERTIES(type)												\
+	{ "serve-file", NESTED_SINGLE,											\
+		offsetof(type, default_action), SUBSPEC(serve_file_spec) },			\
+	{ "serve-directory", NESTED_SINGLE,										\
+		offsetof(type, default_action), SUBSPEC(serve_directory_spec) },	\
+	{ "run-script", NESTED_SINGLE,											\
+		offsetof(type, default_action), SUBSPEC(run_script_spec) },			\
+	{ "use-backend", NESTED_SINGLE,											\
+		offsetof(type, default_action), SUBSPEC(use_backend_spec) },		\
+	{ "proxy-tcp", NESTED_SINGLE,											\
+		offsetof(type, default_action), SUBSPEC(proxy_tcp_spec) },			\
+	{ "proxy-udp", NESTED_SINGLE,											\
+		offsetof(type, default_action), SUBSPEC(proxy_udp_spec) },			\
+	{ "proxy-unix", NESTED_SINGLE,											\
+		offsetof(type, default_action), SUBSPEC(proxy_unix_spec) }
 
 static const config_block_t backend_spec;
 
@@ -264,15 +271,15 @@ static const config_block_t proxy_tcp_spec = {
 	.free = free_action,
 	.properties = {
 		{ "connect-timeout", INTEGER,
-			offsetof(uwsd_action_t, data.proxy.connect_timeout), NULL },
+			offsetof(uwsd_action_t, data.proxy.connect_timeout), { 0 } },
 		{ "transfer-timeout", INTEGER,
-			offsetof(uwsd_action_t, data.proxy.transfer_timeout), NULL },
+			offsetof(uwsd_action_t, data.proxy.transfer_timeout), { 0 } },
 		{ "idle-timeout", INTEGER,
-			offsetof(uwsd_action_t, data.proxy.idle_timeout), NULL },
+			offsetof(uwsd_action_t, data.proxy.idle_timeout), { 0 } },
 		{ "binary", BOOLEAN,
-			offsetof(uwsd_action_t, data.proxy.binary), NULL },
+			offsetof(uwsd_action_t, data.proxy.binary), { 0 } },
 		{ "subprotocol", STRING,
-			offsetof(uwsd_action_t, data.proxy.subprotocol), NULL },
+			offsetof(uwsd_action_t, data.proxy.subprotocol), { 0 } },
 		{ 0 }
 	}
 };
@@ -284,15 +291,15 @@ static const config_block_t proxy_udp_spec = {
 	.free = free_action,
 	.properties = {
 		{ "connect-timeout", INTEGER,
-			offsetof(uwsd_action_t, data.proxy.connect_timeout), NULL },
+			offsetof(uwsd_action_t, data.proxy.connect_timeout), { 0 } },
 		{ "transfer-timeout", INTEGER,
-			offsetof(uwsd_action_t, data.proxy.transfer_timeout), NULL },
+			offsetof(uwsd_action_t, data.proxy.transfer_timeout), { 0 } },
 		{ "idle-timeout", INTEGER,
-			offsetof(uwsd_action_t, data.proxy.idle_timeout), NULL },
+			offsetof(uwsd_action_t, data.proxy.idle_timeout), { 0 } },
 		{ "binary", BOOLEAN,
-			offsetof(uwsd_action_t, data.proxy.binary), NULL },
+			offsetof(uwsd_action_t, data.proxy.binary), { 0 } },
 		{ "subprotocol", STRING,
-			offsetof(uwsd_action_t, data.proxy.subprotocol), NULL },
+			offsetof(uwsd_action_t, data.proxy.subprotocol), { 0 } },
 		{ 0 }
 	}
 };
@@ -304,15 +311,15 @@ static const config_block_t proxy_unix_spec = {
 	.free = free_action,
 	.properties = {
 		{ "connect-timeout", INTEGER,
-			offsetof(uwsd_action_t, data.proxy.connect_timeout), NULL },
+			offsetof(uwsd_action_t, data.proxy.connect_timeout), { 0 } },
 		{ "transfer-timeout", INTEGER,
-			offsetof(uwsd_action_t, data.proxy.transfer_timeout), NULL },
+			offsetof(uwsd_action_t, data.proxy.transfer_timeout), { 0 } },
 		{ "idle-timeout", INTEGER,
-			offsetof(uwsd_action_t, data.proxy.idle_timeout), NULL },
+			offsetof(uwsd_action_t, data.proxy.idle_timeout), { 0 } },
 		{ "binary", BOOLEAN,
-			offsetof(uwsd_action_t, data.proxy.binary), NULL },
+			offsetof(uwsd_action_t, data.proxy.binary), { 0 } },
 		{ "subprotocol", STRING,
-			offsetof(uwsd_action_t, data.proxy.subprotocol), NULL },
+			offsetof(uwsd_action_t, data.proxy.subprotocol), { 0 } },
 		{ 0 }
 	}
 };
@@ -324,11 +331,11 @@ static const config_block_t auth_basic_spec = {
 	.free = free_auth,
 	.properties = {
 		{ "username", STRING,
-			offsetof(uwsd_auth_t, data.basic.username), NULL },
+			offsetof(uwsd_auth_t, data.basic.username), { 0 } },
 		{ "password", STRING,
-			offsetof(uwsd_auth_t, data.basic.password), NULL },
+			offsetof(uwsd_auth_t, data.basic.password), { 0 } },
 		{ "lookup-shadow", BOOLEAN,
-			offsetof(uwsd_auth_t, data.basic.lookup_shadow), NULL },
+			offsetof(uwsd_auth_t, data.basic.lookup_shadow), { 0 } },
 		{ 0 }
 	}
 };
@@ -340,9 +347,9 @@ static const config_block_t auth_mtls_spec = {
 	.free = free_auth,
 	.properties = {
 		{ "require-issuer", STRING,
-			offsetof(uwsd_auth_t, data.mtls.require_issuer), NULL },
+			offsetof(uwsd_auth_t, data.mtls.require_issuer), { 0 } },
 		{ "require-subject", STRING,
-			offsetof(uwsd_auth_t, data.mtls.require_subject), NULL },
+			offsetof(uwsd_auth_t, data.mtls.require_subject), { 0 } },
 		{ 0 }
 	}
 };
@@ -354,13 +361,13 @@ static const config_block_t listen_spec = {
 	.free = free_listen,
 	.properties = {
 		{ "ssl", NESTED_SINGLE,
-			offsetof(uwsd_listen_t, ssl), &ssl_spec },
+			offsetof(uwsd_listen_t, ssl), SUBSPEC(ssl_spec) },
 		{ "request-timeout", INTEGER,
-			offsetof(uwsd_listen_t, request_timeout), NULL },
+			offsetof(uwsd_listen_t, request_timeout), { 0 } },
 		{ "transfer-timeout", INTEGER,
-			offsetof(uwsd_listen_t, transfer_timeout), NULL },
+			offsetof(uwsd_listen_t, transfer_timeout), { 0 } },
 		{ "idle-timeout", INTEGER,
-			offsetof(uwsd_listen_t, idle_timeout), NULL },
+			offsetof(uwsd_listen_t, idle_timeout), { 0 } },
 		MATCH_PROPERTIES(uwsd_listen_t),
 		ACTION_PROPERTIES(uwsd_listen_t),
 		{ 0 }
@@ -371,9 +378,9 @@ static const config_block_t toplevel_spec = {
 	.size = sizeof(uwsd_config_t),
 	.properties = {
 		{ "backend", NESTED_MULTIPLE,
-			offsetof(uwsd_config_t, backends), &backend_spec },
+			offsetof(uwsd_config_t, backends), SUBSPEC(backend_spec) },
 		{ "listen", NESTED_MULTIPLE,
-			offsetof(uwsd_config_t, listeners), &listen_spec },
+			offsetof(uwsd_config_t, listeners), SUBSPEC(listen_spec) },
 		{ 0 }
 	}
 };
@@ -460,7 +467,7 @@ config_free_object(const config_block_t *spec, void *base)
 		case NESTED_MULTIPLE:
 			list_for_each_safe(e, tmp, list_ptr(prop, base)) {
 				list_del(e);
-				config_free_object(prop->nested, e);
+				config_free_object(prop->data.nested, e);
 			}
 
 			break;
@@ -470,7 +477,7 @@ config_free_object(const config_block_t *spec, void *base)
 
 			if (obj) {
 				*(void **)property_ptr(prop, base) = NULL;
-				config_free_object(prop->nested, obj);
+				config_free_object(prop->data.nested, obj);
 			}
 
 			break;
@@ -588,6 +595,31 @@ config_parse_value(const char **input, const config_prop_t *prop, void *base)
 
 		break;
 
+	case ENUM:
+		for (n = 0, p = prop->data.values[0]; p; p = prop->data.values[++n]) {
+			if (!strncmp(buf, p, strlen(buf))) {
+				int_ptr(prop, base) = n;
+				break;
+			}
+		}
+
+		if (!p) {
+			for (n = 0, p = prop->data.values[0], buflen = 0; p; p = prop->data.values[++n]) {
+				buflen += snprintf(buf + buflen, sizeof(buf) - buflen, "'%s'", p);
+
+				if (prop->data.values[n + 1]) {
+					if (prop->data.values[n + 2])
+						buflen += snprintf(buf + buflen, sizeof(buf) - buflen, ", ");
+					else
+						buflen += snprintf(buf + buflen, sizeof(buf) - buflen, " or ");
+				}
+			}
+
+			return parse_error("Expecting %s", buf);
+		}
+
+		break;
+
 	case NESTED_SINGLE:
 		if (char_ptr(prop, base))
 			return parse_error("The '%s' property may only appear once within this block", prop->name);
@@ -595,13 +627,13 @@ config_parse_value(const char **input, const config_prop_t *prop, void *base)
 		/* fall through */
 
 	case NESTED_MULTIPLE:
-		obj = config_alloc_object(prop->nested, buflen ? buf : NULL);
+		obj = config_alloc_object(prop->data.nested, buflen ? buf : NULL);
 
 		if (!obj)
 			return false;
 
-		if (!config_parse_block(input, prop->nested, obj)) {
-			config_free_object(prop->nested, obj);
+		if (!config_parse_block(input, prop->data.nested, obj)) {
+			config_free_object(prop->data.nested, obj);
 
 			return false;
 		}
