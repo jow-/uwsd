@@ -119,8 +119,8 @@ static const config_block_t ssl_spec = {
 	.validate = validate_ssl,
 	.free = free_ssl,
 	.properties = {
-		{ "verify-peer", BOOLEAN,
-			offsetof(uwsd_ssl_t, verify_peer), { 0 } },
+		{ "verify-peer", ENUM,
+			offsetof(uwsd_ssl_t, verify_peer), VALUES("disabled", "optional", "required") },
 		{ "private-key", STRING,
 			offsetof(uwsd_ssl_t, private_key), { 0 } },
 		{ "certificate", STRING,

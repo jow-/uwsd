@@ -23,8 +23,14 @@
 typedef struct uwsd_client_context uwsd_client_context_t;
 typedef struct uwsd_connection uwsd_connection_t;
 
+typedef enum {
+	UWSD_VERIFY_PEER_DISABLED,
+	UWSD_VERIFY_PEER_OPTIONAL,
+	UWSD_VERIFY_PEER_REQUIRED
+} uwsd_ssl_peer_verify_t;
+
 typedef struct {
-	bool verify_peer;
+	uwsd_ssl_peer_verify_t verify_peer;
 	char *private_key, *certificate, *certificate_directory;
 	char *protocols, *ciphers;
 	struct {

@@ -495,15 +495,20 @@ uwsd_ssl_init(uwsd_client_context_t *cl)
 
 	SSL_set_fd(ssl, cl->downstream.ufd.fd);
 
-	if (cl->listener->ssl->verify_peer) {
-		uwsd_ssl_debug(cl, "peer verification required");
-
-		SSL_set_verify(ssl,
-			SSL_VERIFY_PEER|SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
-			NULL);
-	}
-	else {
+	switch (cl->listener->ssl->verify_peer) {
+	case UWSD_VERIFY_PEER_DISABLED:
 		SSL_set_verify(ssl, SSL_VERIFY_NONE, NULL);
+		break;
+
+	case UWSD_VERIFY_PEER_OPTIONAL:
+		uwsd_ssl_debug(cl, "peer verification optional");
+		SSL_set_verify(ssl, SSL_VERIFY_PEER, NULL);
+		break;
+
+	case UWSD_VERIFY_PEER_REQUIRED:
+		uwsd_ssl_debug(cl, "peer verification required");
+		SSL_set_verify(ssl, SSL_VERIFY_PEER|SSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
+		break;
 	}
 
 	cl->downstream.ssl = ssl;
