@@ -17,8 +17,10 @@
 #ifndef UWSD_UTIL_H
 #define UWSD_UTIL_H
 
+#include <stdio.h>
 #include <stdarg.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <stdbool.h>
 #include <sys/uio.h>
 #include <sys/types.h>
@@ -47,6 +49,8 @@ __hidden int strspncmp(const char *, const char *, const char *);
 __hidden int strspncasecmp(const char *, const char *, const char *);
 
 __hidden char *urldecode(const char *);
+__hidden char *htmlescape(const char *);
+__hidden char *pathclean(char *, ssize_t);
 __hidden char *pathexpand(const char *, const char *);
 __hidden size_t pathmatch(const char *, const char *);
 

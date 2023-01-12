@@ -137,10 +137,109 @@ urldecode(const char *str)
 	return s;
 }
 
+static bool
+is_html_special_char(char c)
+{
+	switch (c) {
+	case 0x22:
+	case 0x26:
+	case 0x27:
+	case 0x3C:
+	case 0x3E:
+		return true;
+
+	default:
+		return false;
+	}
+}
+
+__hidden char *
+htmlescape(const char *str)
+{
+	size_t i, len;
+	char *p, *copy;
+
+	for (i = 0, len = 1; str[i]; i++)
+		if (is_html_special_char(str[i]))
+			len += 6; /* &#x??; */
+		else
+			len++;
+
+	copy = calloc(1, len);
+
+	if (!copy) {
+		errno = ENOMEM;
+
+		return NULL;
+	}
+
+	for (i = 0, p = copy; str[i]; i++)
+		if (is_html_special_char(str[i]))
+			p += sprintf(p, "&#x%02x;", (unsigned int)str[i]);
+		else
+			*p++ = str[i];
+
+	return copy;
+}
+
+__hidden char *
+pathclean(char *path, ssize_t len)
+{
+	char *s, *r;
+
+	if (!path)
+		return NULL;
+
+	if (len == -1)
+		len = strlen(path);
+
+	if (len == 0)
+		return path;
+
+	for (s = r = path; len > 0 && *path; len--, path++) {
+		if (*path == '/') {
+			/* skip repeating slashes */
+			while (path[1] == '/')
+				path++;
+
+			/* skip /./ */
+			if (path[1] == '.' && (path[2] == '/' || path[2] == '\0')) {
+				path += 1;
+				continue;
+			}
+
+			/* handle /../ */
+			if (path[1] == '.' && path[2] == '.' && (path[3] == '/' || path[3] == '\0')) {
+				path += 2;
+
+				for (r -= (r > s); r >= s && *r != '/'; r--)
+					;
+
+				continue;
+			}
+
+			if (path[1])
+				*r++ = '/';
+		}
+		else {
+			*r++ = *path;
+		}
+	}
+
+	if (r == s)
+		*r++ = '/';
+	else if (r - s > 1 && r[-1] == '/')
+		r--;
+
+	*r = 0;
+
+	return s;
+}
+
 __hidden char *
 pathexpand(const char *path, const char *base)
 {
-	char buf[PATH_MAX] = { 0 }, *s, *p = NULL, *r;
+	char buf[PATH_MAX] = { 0 }, *p = NULL;
 
 	if (*path != '/') {
 		if (base && *base == '/') {
@@ -172,42 +271,7 @@ pathexpand(const char *path, const char *base)
 		return NULL;
 	}
 
-	for (s = r = p; *p; p++) {
-		if (*p == '/') {
-			/* skip repeating slashes */
-			while (p[1] == '/')
-				p++;
-
-			/* skip /./ */
-			if (p[1] == '.' && (p[2] == '/' || p[2] == '\0')) {
-				p += 1;
-				continue;
-			}
-
-			/* handle /../ */
-			if (p[1] == '.' && p[2] == '.' && (p[3] == '/' || p[3] == '\0')) {
-				p += 2;
-
-				for (r -= (r > s); r >= s && *r != '/'; r--)
-					;
-
-				continue;
-			}
-
-			if (p[1])
-				*r++ = '/';
-		}
-		else {
-			*r++ = *p;
-		}
-	}
-
-	if (r == s)
-		*r++ = '/';
-
-	*r = 0;
-
-	return s;
+	return pathclean(p, -1);
 }
 
 __hidden size_t
