@@ -935,9 +935,18 @@ validate_action(void *obj)
 {
 	uwsd_action_t *action = obj;
 	struct stat s;
+	char *path;
 
 	switch (action->type) {
 	case UWSD_ACTION_FILE:
+		path = pathexpand(action->data.file.path, NULL);
+
+		if (!path)
+			return parse_error("Failed to canonicalize path '%s': %m", action->data.file.path);
+
+		free(action->data.file.path);
+		action->data.file.path = path;
+
 		if (stat(action->data.file.path, &s))
 			return parse_error("Failed to stat '%s': %m", action->data.file.path);
 
@@ -947,6 +956,14 @@ validate_action(void *obj)
 		break;
 
 	case UWSD_ACTION_DIRECTORY:
+		path = pathexpand(action->data.directory.path, NULL);
+
+		if (!path)
+			return parse_error("Failed to canonicalize path '%s': %m", action->data.directory.path);
+
+		free(action->data.directory.path);
+		action->data.directory.path = path;
+
 		if (stat(action->data.directory.path, &s))
 			return parse_error("Failed to stat '%s': %m", action->data.directory.path);
 
