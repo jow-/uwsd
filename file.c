@@ -279,7 +279,7 @@ uwsd_file_directory_list(uwsd_client_context_t *cl, const char *physpath, const 
 
 #ifdef HAVE_O_TMPFILE
 	if (fd == -1)
-		fd = open("/tmp", O_TMPFILE|O_RDWR);
+		fd = open("/tmp", O_TMPFILE|O_RDWR, 0600);
 #endif
 
 	tmp = (fd > -1) ? fdopen(fd, "r+") : tmpfile();
