@@ -18,6 +18,8 @@
 #define UWSD_FILE_H
 
 #include <stdbool.h>
+#include <unistd.h>
+#include <dirent.h>
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -35,5 +37,7 @@ __hidden bool uwsd_file_if_modified_since(uwsd_client_context_t *, struct stat *
 __hidden bool uwsd_file_if_none_match(uwsd_client_context_t *, struct stat *);
 __hidden bool uwsd_file_if_range(uwsd_client_context_t *, struct stat *);
 __hidden bool uwsd_file_if_unmodified_since(uwsd_client_context_t *, struct stat *);
+
+__hidden bool uwsd_file_directory_list(uwsd_client_context_t *, const char *, const char *);
 
 #endif /* UWSD_FILE_H */

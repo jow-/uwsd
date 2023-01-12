@@ -242,6 +242,12 @@ static const config_block_t serve_directory_spec = {
 	.validate = validate_action,
 	.free = free_action,
 	.properties = {
+		{ "content-type", STRING,
+			offsetof(uwsd_action_t, data.directory.content_type), { 0 } },
+		{ "index-filename", STRING,
+			offsetof(uwsd_action_t, data.directory.index_filename), { 0 } },
+		{ "directory-listing", BOOLEAN,
+			offsetof(uwsd_action_t, data.directory.directory_listing), { 0 } },
 		{ 0 }
 	}
 };
@@ -809,7 +815,7 @@ parse_serve_directory(void *obj, const char *label)
 
 	action->type = UWSD_ACTION_DIRECTORY;
 
-	return check_path(label, true, &action->data.directory);
+	return check_path(label, true, &action->data.directory.path);
 }
 
 static bool
@@ -939,11 +945,14 @@ validate_action(void *obj)
 		break;
 
 	case UWSD_ACTION_DIRECTORY:
-		if (stat(action->data.directory, &s))
-			return parse_error("Failed to stat '%s': %m", action->data.directory);
+		if (stat(action->data.directory.path, &s))
+			return parse_error("Failed to stat '%s': %m", action->data.directory.path);
 
 		if (!S_ISDIR(s.st_mode))
-			return parse_error("Path '%s' exists but is not a directory", action->data.directory);
+			return parse_error("Path '%s' exists but is not a directory", action->data.directory.path);
+
+		if (strchr(action->data.directory.index_filename ?: "", '/'))
+			return parse_error("The 'index-filename' value must not contain any slashes");
 
 		break;
 
@@ -978,7 +987,7 @@ free_action(void *obj)
 
 	switch (action->type) {
 	case UWSD_ACTION_FILE:       return free(action->data.file.path);
-	case UWSD_ACTION_DIRECTORY:  return free(action->data.directory);
+	case UWSD_ACTION_DIRECTORY:  return free(action->data.directory.path);
 	case UWSD_ACTION_SCRIPT:     return uwsd_script_free(action);
 	case UWSD_ACTION_TCP_PROXY:  return free(action->data.proxy.hostname);
 	case UWSD_ACTION_UDP_PROXY:  return free(action->data.proxy.hostname);

@@ -18,8 +18,13 @@
 #include <string.h>
 #include <inttypes.h>
 #include <time.h>
+#include <fcntl.h>
 
 #include <sys/stat.h>
+
+#ifdef HAVE_MEMFD_CREATE
+#include <sys/mman.h>
+#endif
 
 #include "file.h"
 #include "http.h"
@@ -174,6 +179,155 @@ uwsd_file_if_unmodified_since(uwsd_client_context_t *cl, struct stat *s)
 
 		return false;
 	}
+
+	return true;
+}
+
+
+static int
+dirent_cmp(const struct dirent **a, const struct dirent **b)
+{
+	bool dir_a = !!((*a)->d_type & DT_DIR);
+	bool dir_b = !!((*b)->d_type & DT_DIR);
+
+	/* directories first */
+	if (dir_a != dir_b)
+		return dir_b - dir_a;
+
+	return alphasort(a, b);
+}
+
+static void
+print_entry(FILE *tmp, struct dirent *e,
+            const char *physpath, const char *urlpath)
+{
+	const char *type = "directory";
+	unsigned int mode = S_IROTH;
+	struct stat s;
+	char *p;
+
+	if (!strcmp(e->d_name, "."))
+		return;
+
+	p = pathexpand(e->d_name, physpath);
+
+	if (!p)
+		return;
+
+	if (!stat(p, &s)) {
+		if (S_ISDIR(s.st_mode))
+			mode |= S_IXOTH;
+		else
+			type = uwsd_file_mime_lookup(p);
+	}
+	else {
+		s.st_mode = 0;
+	}
+
+	free(p);
+
+	if ((s.st_mode & mode) != mode)
+		return;
+
+	p = htmlescape(e->d_name);
+
+	if (!p)
+		return;
+
+	fprintf(tmp,
+		"<li><strong><a href='%s/%s%s'>%s</a>%s"
+		"</strong><br /><small>modified: %s"
+		"<br />%s - %.02f kbyte<br />"
+		"<br /></small></li>\n",
+		urlpath, p, (mode & S_IXOTH) ? "/" : "",
+		p, (mode & S_IXOTH) ? "/" : "",
+		uwsd_file_unix2date(s.st_mtime),
+		type, s.st_size / 1024.0);
+
+	free(p);
+}
+
+static void
+list_entries(FILE *tmp, struct dirent **files, int count,
+             const char *physpath, const char *urlpath)
+{
+	int i;
+
+	if (!strcmp(urlpath, "/"))
+		urlpath = "";
+
+	for (i = 0; i < count; i++) {
+		print_entry(tmp, files[i], physpath, urlpath);
+		free(files[i]);
+	}
+}
+
+__hidden bool
+uwsd_file_directory_list(uwsd_client_context_t *cl, const char *physpath, const char *urlpath)
+{
+	const char *type = cl->action->data.directory.content_type;
+	char szbuf[sizeof("18446744073709551615")];
+	struct dirent **files = NULL;
+	int fd = -1, count;
+	char *title;
+	FILE *tmp;
+
+#ifdef HAVE_MEMFD_CREATE
+	if (fd == -1)
+		fd = memfd_create("uwsd-directory-listing", 0);
+#endif
+
+#ifdef HAVE_O_TMPFILE
+	if (fd == -1)
+		fd = open("/tmp", O_TMPFILE|O_RDWR);
+#endif
+
+	tmp = (fd > -1) ? fdopen(fd, "r+") : tmpfile();
+
+	if (!tmp)
+		return false;
+
+	title = htmlescape(urlpath);
+
+	if (!title)
+		return false;
+
+	fprintf(tmp,
+		"<html><head><title>Index of %1$s/</title></head>"
+		"<body><h1>Index of %1$s/</h1><hr /><ol>\n",
+		strcmp(title, "/") ? title : "");
+
+	count = scandir(physpath, &files, NULL, dirent_cmp);
+
+	list_entries(tmp, files, count, physpath, title);
+
+	free(title);
+	free(files);
+
+	fprintf(tmp, "</ol><hr /></body></html>");
+
+	cl->upstream.ufd.fd = dup(fileno(tmp));
+
+	if (cl->upstream.ufd.fd == -1) {
+		fclose(tmp);
+
+		return false;
+	}
+
+	snprintf(szbuf, sizeof(szbuf), "%lu", ftell(tmp));
+
+	fflush(tmp);
+	fclose(tmp);
+
+	lseek(cl->upstream.ufd.fd, 0, SEEK_SET);
+
+	uwsd_http_reply(cl, 200, "OK", UWSD_HTTP_REPLY_EMPTY,
+		"Content-Type", type ? type : "text/html; charset=utf-8",
+		"Content-Length", szbuf,
+		"Connection", uwsd_http_header_contains(cl, "Connection", "close") ? "close" : NULL,
+		UWSD_HTTP_REPLY_EOH);
+
+	uwsd_state_transition(cl, STATE_CONN_REPLY_SENDFILE);
 
 	return true;
 }

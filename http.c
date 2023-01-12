@@ -1025,7 +1025,7 @@ static char *
 determine_path(uwsd_client_context_t *cl)
 {
 	uwsd_action_t *action = cl->action;
-	char *dst = (action->type == UWSD_ACTION_FILE) ? action->data.file.path : action->data.directory;
+	char *dst = (action->type == UWSD_ACTION_FILE) ? action->data.file.path : action->data.directory.path;
 	size_t pfx_len = strlen(cl->prefix);
 	char *url = NULL, *path = NULL, *base = NULL;
 	size_t req_len = 0;
@@ -1174,67 +1174,231 @@ http_proxy_connect(uwsd_client_context_t *cl)
 }
 
 static bool
-http_file_serve(uwsd_client_context_t *cl)
+send_file(uwsd_client_context_t *cl, const char *path, const char *type, struct stat *s)
 {
 	char szbuf[sizeof("18446744073709551615")];
+
+	if (!(s->st_mode & S_IROTH) || strrchr(path, '/')[1] == '.') {
+		errno = EACCES;
+
+		return false;
+	}
+
+	cl->upstream.ufd.fd = open(path, O_RDONLY);
+
+	if (cl->upstream.ufd.fd == -1)
+		return false;
+
+	if (uwsd_file_if_range(cl, s) &&
+	    uwsd_file_if_match(cl, s) &&
+	    uwsd_file_if_modified_since(cl, s) &&
+	    uwsd_file_if_none_match(cl, s) &&
+	    uwsd_file_if_unmodified_since(cl, s))
+	{
+		snprintf(szbuf, sizeof(szbuf), "%zu", (size_t)s->st_size);
+
+		if (!type || !*type)
+			type = uwsd_file_mime_lookup(path);
+
+		uwsd_http_reply(cl, 200, "OK", UWSD_HTTP_REPLY_EMPTY,
+			"Content-Type", type,
+			"Content-Length", szbuf,
+			"ETag", uwsd_file_mktag(s),
+			"Last-Modified", uwsd_file_unix2date(s->st_mtime),
+			"Connection", uwsd_http_header_contains(cl, "Connection", "close") ? "close" : NULL,
+			UWSD_HTTP_REPLY_EOH);
+	}
+
+	uwsd_state_transition(cl, STATE_CONN_REPLY_SENDFILE);
+
+	return true;
+}
+
+static bool
+http_file_serve(uwsd_client_context_t *cl)
+{
+	const char *type = cl->action->data.file.content_type;
 	char *path = determine_path(cl);
-	const char *mimetype = NULL;
+	bool rv = false;
 	struct stat s;
 
 	if (cl->request_method != HTTP_GET && cl->request_method != HTTP_HEAD)
 		http_error_return(cl, 405, "Method Not Allowed",
 			"The used HTTP method is invalid for the requested resource\n");
 
-	if (path && stat(path, &s) == 0)
-		cl->upstream.ufd.fd = open(path, O_RDONLY);
-	else
-		cl->upstream.ufd.fd = -1;
-
-	if (cl->upstream.ufd.fd == -1) {
-		free(path);
-
-		switch (errno) {
-		case EACCES:
-			http_error_return(cl, 403, "Permission Denied",
-				"Access to the requested file is forbidden\n");
-
-		case ENOENT:
-			http_error_return(cl, 404, "Not Found",
-				"The requested path does not exist on this server\n");
-
-		default:
-			http_error_return(cl, 500, "Internal Server Error",
-				"Unable to serve requested file: %s\n",
-				strerror(errno));
-		}
-	}
-
-	if (uwsd_file_if_range(cl, &s) &&
-	    uwsd_file_if_match(cl, &s) &&
-	    uwsd_file_if_modified_since(cl, &s) &&
-	    uwsd_file_if_none_match(cl, &s) &&
-	    uwsd_file_if_unmodified_since(cl, &s))
-	{
-		snprintf(szbuf, sizeof(szbuf), "%zu", (size_t)s.st_size);
-
-		if (cl->action->type == UWSD_ACTION_FILE)
-			mimetype = cl->action->data.file.content_type;
-
-		if (!mimetype || !*mimetype)
-			mimetype = uwsd_file_mime_lookup(path);
-
-		uwsd_http_reply(cl, 200, "OK", UWSD_HTTP_REPLY_EMPTY,
-			"Content-Type", mimetype,
-			"Content-Length", szbuf,
-			"ETag", uwsd_file_mktag(&s),
-			"Last-Modified", uwsd_file_unix2date(s.st_mtime),
-			"Connection", uwsd_http_header_contains(cl, "Connection", "close") ? "close" : NULL,
-			UWSD_HTTP_REPLY_EOH);
-	}
+	rv = (path && !stat(path, &s) && send_file(cl, path, type, &s));
 
 	free(path);
 
-	uwsd_state_transition(cl, STATE_CONN_REPLY_SENDFILE);
+	switch (rv ? 0 : errno) {
+	case 0:
+		return true;
+
+	case EACCES:
+		http_error_return(cl, 403, "Permission Denied",
+			"Access to the requested file is forbidden\n");
+		break;
+
+	case ENOENT:
+		http_error_return(cl, 404, "Not Found",
+			"The requested path does not exist on this server\n");
+		break;
+
+	default:
+		http_error_return(cl, 500, "Internal Server Error",
+			"Unable to serve requested file: %m\n");
+		break;
+	}
+}
+
+static char *
+find_index_file(uwsd_client_context_t *cl, const char *path, struct stat *s)
+{
+	char *candidates, *p, *indexfile = NULL;
+
+	if (cl->action->data.directory.index_filename)
+		candidates = strdup(cl->action->data.directory.index_filename);
+	else
+		candidates = strdup("index.html;index.htm;default.html;default.htm");
+
+	if (!candidates) {
+		errno = ENOMEM;
+
+		return NULL;
+	}
+
+	for (p = strtok(candidates, ",; \t\n"); p; p = strtok(NULL, ",; \t\n")) {
+		indexfile = pathexpand(p, path);
+
+		if (!indexfile)
+			return NULL;
+
+		if (stat(indexfile, s) == -1) {
+			uwsd_http_debug(cl, "Unable to stat() index file candiate '%s': %m", indexfile);
+			goto skip;
+		}
+
+		if (!S_ISREG(s->st_mode)) {
+			uwsd_http_debug(cl, "Index file candiate '%s' is not a regular file", indexfile);
+			goto skip;
+		}
+
+		if (!(s->st_mode & S_IROTH)) {
+			uwsd_http_debug(cl, "Index file candiate '%s' is not world readable", indexfile);
+			goto skip;
+		}
+
+		break;
+
+skip:
+		free(indexfile);
+		indexfile = NULL;
+	}
+
+	free(candidates);
+
+	errno = 0;
+
+	return indexfile;
+}
+
+static bool
+http_directory_serve(uwsd_client_context_t *cl)
+{
+	const char *type = cl->action->data.directory.content_type;
+	char *path = NULL, *base = NULL, *url = NULL, *p;
+	bool rv = false;
+	struct stat s;
+
+	if (cl->request_method != HTTP_GET && cl->request_method != HTTP_HEAD)
+		http_error_return(cl, 405, "Method Not Allowed",
+			"The used HTTP method is invalid for the requested resource\n");
+
+	base = pathexpand(cl->action->data.directory.path, NULL);
+	url = pathclean(urldecode(cl->request_uri), -1);
+
+	if (!base || !url)
+		goto error500;
+
+	if (*url != '/')
+		goto error404;
+
+	url[strcspn(url, "?")] = 0;
+	path = pathexpand(url + strspn(url, "/"), base);
+
+	if (!path)
+		goto error500;
+
+	if (!pathmatch(base, path))
+		goto error403;
+
+	if (stat(path, &s) == -1) {
+		switch (errno) {
+		case EACCES: goto error403;
+		default:     goto error404;
+		}
+	}
+
+	if (S_ISDIR(s.st_mode)) {
+		if (!(s.st_mode & S_IXOTH))
+			goto error403;
+
+		p = find_index_file(cl, path, &s);
+
+		if (!p) {
+			if (errno)
+				goto error500;
+
+			if (!cl->action->data.directory.directory_listing)
+				goto error403;
+
+			rv = uwsd_file_directory_list(cl, path, url);
+		}
+		else {
+			rv = send_file(cl, p, type, &s);
+		}
+
+		free(p);
+	}
+	else {
+		rv = send_file(cl, path, NULL, &s);
+	}
+
+	switch (rv ? 0 : errno) {
+	case 0:      goto success;
+	case EACCES: goto error403;
+	case ENOENT: goto error404;
+	default:     goto error500;
+	}
+
+error403:
+	free(base);
+	free(path);
+	free(url);
+
+	http_error_return(cl, 403, "Permission Denied",
+		"Access to the requested path is forbidden");
+
+error404:
+	free(base);
+	free(path);
+	free(url);
+
+	http_error_return(cl, 404, "Not Found",
+		"The requested path does not exist on this server");
+
+error500:
+	free(base);
+	free(path);
+	free(url);
+
+	http_error_return(cl, 500, "Internal Server Error",
+		"Unable to serve requested path: %m\n");
+
+success:
+	free(url);
+	free(path);
+	free(base);
 
 	return true;
 }
@@ -1341,9 +1505,12 @@ uwsd_http_state_request_header(uwsd_client_context_t *cl, uwsd_connection_state_
 				if (!http_proxy_connect(cl))
 					return;
 			}
-			else if (cl->action->type == UWSD_ACTION_FILE ||
-			         cl->action->type == UWSD_ACTION_DIRECTORY) {
+			else if (cl->action->type == UWSD_ACTION_FILE) {
 				if (!http_file_serve(cl))
+					return;
+			}
+			else if (cl->action->type == UWSD_ACTION_DIRECTORY) {
+				if (!http_directory_serve(cl))
 					return;
 			}
 			else if (cl->action->type == UWSD_ACTION_SCRIPT) {
@@ -1477,6 +1644,9 @@ uwsd_http_state_response_sendfile(uwsd_client_context_t *cl, uwsd_connection_sta
 	}
 
 	if (wlen == 0) {
+		close(cl->upstream.ufd.fd);
+		cl->upstream.ufd.fd = -1;
+
 		/* Close connection? */
 		if (cl->http_version < 0x0101 || uwsd_http_header_contains(cl, "Connection", "close"))
 			return client_free(cl, "closing connection");

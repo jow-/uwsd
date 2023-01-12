@@ -52,7 +52,13 @@ typedef struct uwsd_action {
 			char *path;
 			char *content_type;
 		} file;
-		char *directory;
+		struct
+		{
+			char *path;
+			char *content_type;
+			char *index_filename;
+			bool directory_listing;
+		} directory;
 		struct {
 			struct uloop_timeout timeout;
 			struct uloop_process proc;

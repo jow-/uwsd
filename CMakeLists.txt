@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.13)
+include(CheckCSourceCompiles)
 
 PROJECT(uwsd C)
 ADD_DEFINITIONS(-Os -Wall -Werror --std=gnu99 -ffunction-sections -fwrapv -D_GNU_SOURCE)
@@ -15,6 +16,22 @@ IF(DEBUG)
   ADD_DEFINITIONS(-DDEBUG -g3 -O0)
 ELSE()
   ADD_DEFINITIONS(-DNDEBUG)
+ENDIF()
+
+CHECK_C_SOURCE_COMPILES(
+	"#include <sys/mman.h>\nint main() { return memfd_create(\"test\", 0); }"
+	HAVE_MEMFD_CREATE)
+
+CHECK_C_SOURCE_COMPILES(
+	"#define _GNU_SOURCE\n#include <fcntl.h>\nint main() { return O_TMPFILE; }"
+	HAVE_O_TMPFILE)
+
+IF(HAVE_MEMFD_CREATE)
+	ADD_DEFINITIONS(-DHAVE_MEMFD_CREATE)
+ENDIF()
+
+IF(HAVE_O_TMPFILE)
+	ADD_DEFINITIONS(-DHAVE_O_TMPFILE)
 ENDIF()
 
 IF(USE_MBEDTLS)
