@@ -36,6 +36,7 @@
 #include "auth.h"
 #include "log.h"
 #include "script.h"
+#include "config.h"
 
 #define HTTP_METHOD(name) { #name, sizeof(#name) - 1, HTTP_##name }
 
@@ -1177,6 +1178,7 @@ static bool
 send_file(uwsd_client_context_t *cl, const char *path, const char *type, struct stat *s)
 {
 	char szbuf[sizeof("18446744073709551615")];
+	char *cstype = NULL;
 
 	if (!(s->st_mode & S_IROTH) || strrchr(path, '/')[1] == '.') {
 		errno = EACCES;
@@ -1200,13 +1202,18 @@ send_file(uwsd_client_context_t *cl, const char *path, const char *type, struct 
 		if (!type || !*type)
 			type = uwsd_file_mime_lookup(path);
 
+		if (config->default_charset && !strncmp(type, "text/", 5) && !strcasestr(type, "charset="))
+			asprintf(&cstype, "%s; charset=%s", type, config->default_charset);
+
 		uwsd_http_reply(cl, 200, "OK", UWSD_HTTP_REPLY_EMPTY,
-			"Content-Type", type,
+			"Content-Type", cstype ? cstype : type,
 			"Content-Length", szbuf,
 			"ETag", uwsd_file_mktag(s),
 			"Last-Modified", uwsd_file_unix2date(s->st_mtime),
 			"Connection", uwsd_http_header_contains(cl, "Connection", "close") ? "close" : NULL,
 			UWSD_HTTP_REPLY_EOH);
+
+		free(cstype);
 	}
 
 	uwsd_state_transition(cl, STATE_CONN_REPLY_SENDFILE);

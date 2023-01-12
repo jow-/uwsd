@@ -385,6 +385,8 @@ static const config_block_t listen_spec = {
 static const config_block_t toplevel_spec = {
 	.size = sizeof(uwsd_config_t),
 	.properties = {
+		{ "default-charset", STRING,
+			offsetof(uwsd_config_t, default_charset), { 0 } },
 		{ "backend", NESTED_MULTIPLE,
 			offsetof(uwsd_config_t, backends), SUBSPEC(backend_spec) },
 		{ "listen", NESTED_MULTIPLE,
