@@ -1022,73 +1022,6 @@ uwsd_http_reply_buffer_varg(char *buf, size_t buflen, double http_version,
 	return pos - buf;
 }
 
-static char *
-determine_path(uwsd_client_context_t *cl)
-{
-	uwsd_action_t *action = cl->action;
-	char *dst = (action->type == UWSD_ACTION_FILE) ? action->data.file.path : action->data.directory.path;
-	size_t pfx_len = strlen(cl->prefix);
-	char *url = NULL, *path = NULL, *base = NULL;
-	size_t req_len = 0;
-
-	url = urldecode(cl->request_uri);
-
-	if (!url) {
-		errno = ENOMEM;
-		return NULL;
-	}
-
-	req_len = strcspn(url, "?");
-	url[req_len] = 0;
-
-	base = pathexpand(dst, NULL);
-
-	if (!base) {
-		errno = ENOMEM;
-		free(url);
-		return NULL;
-	}
-
-	/* destination is a directory */
-	if (action->type == UWSD_ACTION_DIRECTORY) {
-		/* backend path prefix is a directory */
-		if (pfx_len && cl->prefix[pfx_len - 1] == '/') {
-			if (req_len <= pfx_len)
-				path = pathexpand("index.html", base);
-			else
-				path = pathexpand(url + pfx_len, base);
-		}
-
-		/* backend path prefix is a file */
-		else {
-			path = strrchr(url, '/');
-			path = pathexpand(path ? path + 1 : url, base);
-		}
-	}
-
-	/* destination is a file, ignore request url path */
-	else {
-		path = base;
-		base = NULL;
-	}
-
-	if (base && path && !pathmatch(base, path)) {
-		uwsd_http_debug(cl, "rejecting path: %s", path);
-		free(path);
-		path = NULL;
-		errno = ENOENT;
-	}
-	else {
-		uwsd_http_debug(cl, "resolved path: %s", path);
-	}
-
-	free(url);
-	free(base);
-
-
-	return path;
-}
-
 static bool
 test_match(uwsd_client_context_t *cl, uwsd_match_t *match)
 {
@@ -1224,8 +1157,7 @@ send_file(uwsd_client_context_t *cl, const char *path, const char *type, struct 
 static bool
 http_file_serve(uwsd_client_context_t *cl)
 {
-	const char *type = cl->action->data.file.content_type;
-	char *path = determine_path(cl);
+	char *path = cl->action->data.file.path;
 	bool rv = false;
 	struct stat s;
 
@@ -1233,29 +1165,38 @@ http_file_serve(uwsd_client_context_t *cl)
 		http_error_return(cl, 405, "Method Not Allowed",
 			"The used HTTP method is invalid for the requested resource\n");
 
-	rv = (path && !stat(path, &s) && send_file(cl, path, type, &s));
+	if (stat(path, &s) == -1) {
+		switch (errno) {
+		case EACCES: goto error403;
+		default:     goto error404;
+		}
+	}
 
-	free(path);
+	if (!S_ISREG(s.st_mode)) {
+		uwsd_http_debug(cl, "Path '%s' exists but does not point to a regular file", path);
+		goto error404;
+	}
+
+	rv = send_file(cl, path, NULL, &s);
 
 	switch (rv ? 0 : errno) {
-	case 0:
-		return true;
-
-	case EACCES:
-		http_error_return(cl, 403, "Permission Denied",
-			"Access to the requested file is forbidden\n");
-		break;
-
-	case ENOENT:
-		http_error_return(cl, 404, "Not Found",
-			"The requested path does not exist on this server\n");
-		break;
-
-	default:
-		http_error_return(cl, 500, "Internal Server Error",
-			"Unable to serve requested file: %m\n");
-		break;
+	case 0:      return true;
+	case EACCES: goto error403;
+	case ENOENT: goto error404;
+	default:     goto error500;
 	}
+
+error403:
+	http_error_return(cl, 403, "Permission Denied",
+		"Access to the requested path is forbidden");
+
+error404:
+	http_error_return(cl, 404, "Not Found",
+		"The requested path does not exist on this server");
+
+error500:
+	http_error_return(cl, 500, "Internal Server Error",
+		"Unable to serve requested path: %m\n");
 }
 
 static char *
@@ -1313,7 +1254,8 @@ static bool
 http_directory_serve(uwsd_client_context_t *cl)
 {
 	const char *type = cl->action->data.directory.content_type;
-	char *path = NULL, *base = NULL, *url = NULL, *p;
+	char *base = cl->action->data.directory.path;
+	char *path = NULL, *url = NULL, *p;
 	bool rv = false;
 	struct stat s;
 
@@ -1321,7 +1263,6 @@ http_directory_serve(uwsd_client_context_t *cl)
 		http_error_return(cl, 405, "Method Not Allowed",
 			"The used HTTP method is invalid for the requested resource\n");
 
-	base = pathexpand(cl->action->data.directory.path, NULL);
 	url = pathclean(urldecode(cl->request_uri), -1);
 
 	if (!base || !url)
@@ -1379,7 +1320,6 @@ http_directory_serve(uwsd_client_context_t *cl)
 	}
 
 error403:
-	free(base);
 	free(path);
 	free(url);
 
@@ -1387,7 +1327,6 @@ error403:
 		"Access to the requested path is forbidden");
 
 error404:
-	free(base);
 	free(path);
 	free(url);
 
@@ -1395,7 +1334,6 @@ error404:
 		"The requested path does not exist on this server");
 
 error500:
-	free(base);
 	free(path);
 	free(url);
 
@@ -1403,9 +1341,8 @@ error500:
 		"Unable to serve requested path: %m\n");
 
 success:
-	free(url);
 	free(path);
-	free(base);
+	free(url);
 
 	return true;
 }
