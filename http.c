@@ -1573,7 +1573,10 @@ uwsd_http_state_response_sendfile(uwsd_client_context_t *cl, uwsd_connection_sta
 		return;
 	}
 
-	wlen = client_sendfile(&cl->downstream, cl->upstream.ufd.fd, NULL, sizeof(cl->rxbuf.data));
+	if (cl->request_method != HTTP_HEAD)
+		wlen = client_sendfile(&cl->downstream, cl->upstream.ufd.fd, NULL, sizeof(cl->rxbuf.data));
+	else
+		wlen = 0;
 
 	if (wlen == -1) {
 		if (errno == EINVAL || errno == ENOSYS) {
