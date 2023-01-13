@@ -150,7 +150,7 @@ server_socket_setup(const char *sockpath)
 	strncpy(sun.sun_path, sockpath, sizeof(sun.sun_path));
 #endif
 
-	if (bind(sock, &sun, sizeof(sun)) == -1) {
+	if (bind(sock, (struct sockaddr *)&sun, sizeof(sun)) == -1) {
 		uwsd_log_err(NULL, "Unable to bind to UNIX socket '%s%s': %m",
 			sun.sun_path[0] ? "" : "@",
 			sun.sun_path[0] ? sun.sun_path : sun.sun_path + 1);
