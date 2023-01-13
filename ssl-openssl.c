@@ -400,6 +400,20 @@ ssl_load_certificates(uwsd_ssl_t *ctx, const char *directory)
 	return (ctx->contexts.count > 0);
 }
 
+#ifndef HAVE_SSL_GET0_PEER_CERTIFICATE
+static X509 *
+SSL_get0_peer_certificate(const SSL *ssl)
+{
+	X509 *cert;
+
+	cert = SSL_get_peer_certificate(ssl);
+
+	X509_free(cert);
+
+	return cert;
+}
+#endif
+
 __hidden bool
 uwsd_ssl_ctx_init(uwsd_ssl_t *ctx)
 {

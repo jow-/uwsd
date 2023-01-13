@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.13)
 include(CheckCSourceCompiles)
+include(CheckSymbolExists)
 
 PROJECT(uwsd C)
 ADD_DEFINITIONS(-Os -Wall -Werror --std=gnu99 -ffunction-sections -fwrapv -D_GNU_SOURCE)
@@ -45,6 +46,13 @@ ELSE()
 	FIND_LIBRARY(crypto NAMES crypto)
 	SET(UWSD_SSL_SOURCES ssl-openssl.c)
 	SET(UWSD_SSL_LIBRARIES ${ssl} ${crypto})
+
+	SET(CMAKE_REQUIRED_LIBRARIES ${ssl})
+	CHECK_SYMBOL_EXISTS(SSL_get0_peer_certificate openssl/ssl.h HAVE_SSL_GET0_PEER_CERTIFICATE)
+
+	IF(HAVE_SSL_GET0_PEER_CERTIFICATE)
+		ADD_DEFINITIONS(-DHAVE_SSL_GET0_PEER_CERTIFICATE)
+	ENDIF()
 ENDIF()
 
 SET(UWSD_SOURCES main.c teeny-sha1.c util.c listen.c http.c client.c ws.c file.c state.c script.c config.c auth.c log.c ${UWSD_SSL_SOURCES})
