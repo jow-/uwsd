@@ -1357,7 +1357,7 @@ http_script_connect(uwsd_client_context_t *cl)
 		http_error_return(cl, 502, "Bad Gateway",
 			"Unable to spawn UNIX socket: %m\n");
 
-	if (connect(cl->upstream.ufd.fd, sun, sizeof(*sun)) == -1 && errno != EINPROGRESS)
+	if (connect(cl->upstream.ufd.fd, (struct sockaddr *)sun, sizeof(*sun)) == -1 && errno != EINPROGRESS)
 		http_error_return(cl, 502, "Bad Gateway",
 			"Unable to connect to script worker: %m");
 
