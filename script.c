@@ -1443,6 +1443,9 @@ uwsd_script_close(uwsd_client_context_t *cl)
 	char statusbuf[125];
 	int statuslen = 2;
 
+	if (!cl->action || cl->action->type != UWSD_ACTION_SCRIPT)
+		return;
+
 	if (cl->protocol == UWSD_PROTOCOL_HTTP) {
 		single_tlv(iov, UWSD_SCRIPT_DATA_HTTP_EOF, 0, "");
 	}
