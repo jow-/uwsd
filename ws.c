@@ -448,7 +448,7 @@ ws_script_connect(uwsd_client_context_t *cl)
 			return false;
 		}
 
-		if (connect(cl->upstream.ufd.fd, sun, sizeof(*sun)) == -1 && errno != EINPROGRESS) {
+		if (connect(cl->upstream.ufd.fd, (struct sockaddr *)sun, sizeof(*sun)) == -1 && errno != EINPROGRESS) {
 			uwsd_http_error_send(cl, 502, "Bad Gateway",
 				"Unable to connect to script worker: %m");
 
