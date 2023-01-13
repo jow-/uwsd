@@ -39,7 +39,7 @@ accept_cb(struct uloop_fd *ufd, unsigned int events)
 	struct sockaddr_in6 sa = { 0 };
 	int fd;
 
-	fd = accept(ufd->fd, &sa, &alen);
+	fd = accept(ufd->fd, (struct sockaddr *)&sa, &alen);
 
 	if (fd == -1) {
 		uwsd_log_err(NULL, "accept failed: %m");
