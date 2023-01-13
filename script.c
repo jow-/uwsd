@@ -1531,5 +1531,8 @@ uwsd_script_worker_main(const char *sockpath, const char *scriptpath)
 	uwsd_logging_priority = atoi(getenv("UWSD_LOG_PRIORITY") ?: "0");
 	uwsd_logging_channels = atoi(getenv("UWSD_LOG_CHANNELS") ?: "0");
 
+	setvbuf(stdout, NULL, _IOLBF, 0);
+	setvbuf(stderr, NULL, _IOLBF, 0);
+
 	return script_context_run(sockpath, scriptpath);
 }
