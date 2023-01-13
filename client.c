@@ -62,7 +62,7 @@ client_create(int fd, uwsd_listen_t *listen, struct sockaddr *peeraddr, size_t a
 
 	uwsd_log_debug(cl, "connected");
 
-	if (getsockname(fd, &cl->sa_local.in6, &((socklen_t){ sizeof(cl->sa_local.in6) })) == -1)
+	if (getsockname(fd, (struct sockaddr *)&cl->sa_local.in6, &((socklen_t){ sizeof(cl->sa_local.in6) })) == -1)
 		uwsd_log_warn(NULL, "Unable to acquire local socket name: %m");
 
 	if (listen->ssl && !uwsd_ssl_init(cl))
