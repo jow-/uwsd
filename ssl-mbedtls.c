@@ -165,27 +165,24 @@ ssl_gather_entropy(void *ctx, unsigned char *out, size_t len)
 }
 
 static bool
-ssl_parse_protocols(ssl_ctx_t *tls_ctx, const char *protocols)
+ssl_parse_protocols(ssl_ctx_t *tls_ctx, char *const *protocols)
 {
 	bool has_1_2 = false, has_1_3 = false;
-	const char *p;
 
-	for (protocols += strspn(protocols, " \t\r\n"); *protocols; ) {
-		p = protocols + strcspn(protocols, " \t\r\n");
-
-		if (!strspncmp(protocols, p, "TLSv1.2")) {
+	while (*protocols) {
+		if (!strcmp(*protocols, "TLSv1.2")) {
 			has_1_2 = true;
 		}
-		else if (!strspncmp(protocols, p, "TLSv1.3")) {
+		else if (!strcmp(*protocols, "TLSv1.3")) {
 			has_1_3 = true;
 		}
 		else {
-			uwsd_ssl_err(NULL, "Unrecognized SSL protocol '%.*s'", (int)(p - protocols), protocols);
+			uwsd_ssl_err(NULL, "Unrecognized SSL protocol '%s'", *protocols);
 
 			return false;
 		}
 
-		protocols = p + strspn(p, " \t\r\n");
+		protocols++;
 	}
 
 	if (!has_1_2 && !has_1_3) {
@@ -269,7 +266,7 @@ ssl_free_context(ssl_ctx_t *tls_ctx)
 }
 
 static ssl_ctx_t *
-ssl_create_context(const char *protocols, const char *ciphers)
+ssl_create_context(char *const *protocols, const char *ciphers)
 {
 	ssl_ctx_t *tls_ctx = NULL;
 

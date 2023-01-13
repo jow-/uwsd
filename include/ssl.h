@@ -32,7 +32,7 @@ typedef enum {
 typedef struct {
 	uwsd_ssl_peer_verify_t verify_peer;
 	char *private_key, *certificate, *certificate_directory;
-	char *protocols, *ciphers;
+	char **protocols, *ciphers;
 	struct {
 		void **entries;
 		size_t count;

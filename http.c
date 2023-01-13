@@ -1202,21 +1202,14 @@ error500:
 static char *
 find_index_file(uwsd_client_context_t *cl, const char *path, struct stat *s)
 {
-	char *candidates, *p, *indexfile = NULL;
+	char **candidates = cl->action->data.directory.index_filenames;
+	char *indexfile = NULL;
 
-	if (cl->action->data.directory.index_filename)
-		candidates = strdup(cl->action->data.directory.index_filename);
-	else
-		candidates = strdup("index.html;index.htm;default.html;default.htm");
+	if (!candidates)
+		candidates = (char *[]){ "index.html", "index.htm", "default.html", "default.htm", NULL };
 
-	if (!candidates) {
-		errno = ENOMEM;
-
-		return NULL;
-	}
-
-	for (p = strtok(candidates, ",; \t\n"); p; p = strtok(NULL, ",; \t\n")) {
-		indexfile = pathexpand(p, path);
+	while (*candidates) {
+		indexfile = pathexpand(*candidates, path);
 
 		if (!indexfile)
 			return NULL;
@@ -1241,9 +1234,8 @@ find_index_file(uwsd_client_context_t *cl, const char *path, struct stat *s)
 skip:
 		free(indexfile);
 		indexfile = NULL;
+		candidates++;
 	}
-
-	free(candidates);
 
 	errno = 0;
 

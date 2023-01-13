@@ -37,6 +37,7 @@ typedef enum {
 	BOOLEAN,
 	INTEGER,
 	ENUM,
+	LIST,
 	NESTED_SINGLE,
 	NESTED_MULTIPLE,
 } config_type_t;
@@ -77,6 +78,7 @@ property_ptr(const config_prop_t *prop, void *base)
 	return (void *)((uintptr_t)base + prop->offset);
 }
 
+#define charptr_ptr(prop, base) *(char ***)property_ptr(prop, base)
 #define char_ptr(prop, base) *(char **)property_ptr(prop, base)
 #define bool_ptr(prop, base) *(bool *)property_ptr(prop, base)
 #define int_ptr(prop, base)  *(int *)property_ptr(prop, base)
@@ -127,7 +129,7 @@ static const config_block_t ssl_spec = {
 			offsetof(uwsd_ssl_t, certificate), { 0 } },
 		{ "certificate-directory", STRING,
 			offsetof(uwsd_ssl_t, certificate_directory), { 0 } },
-		{ "protocols", STRING,
+		{ "protocols", LIST,
 			offsetof(uwsd_ssl_t, protocols), { 0 } },
 		{ "ciphers", STRING,
 			offsetof(uwsd_ssl_t, ciphers), { 0 } },
@@ -244,8 +246,8 @@ static const config_block_t serve_directory_spec = {
 	.properties = {
 		{ "content-type", STRING,
 			offsetof(uwsd_action_t, data.directory.content_type), { 0 } },
-		{ "index-filename", STRING,
-			offsetof(uwsd_action_t, data.directory.index_filename), { 0 } },
+		{ "index-filename", LIST,
+			offsetof(uwsd_action_t, data.directory.index_filenames), { 0 } },
 		{ "directory-listing", BOOLEAN,
 			offsetof(uwsd_action_t, data.directory.directory_listing), { 0 } },
 		{ 0 }
@@ -437,6 +439,88 @@ skipchar(const char **input, char c)
 	return true;
 }
 
+static char *
+extract_string(const char **input, const char *separator)
+{
+	static char buf[PATH_MAX];
+	char *output, q;
+	bool esc;
+
+	skipws(input);
+
+	if (**input == '"' || **input == '\'') {
+		for (q = *(*input)++, output = buf, esc = false; **input; (*input)++) {
+			if (output - buf == sizeof(buf)) {
+				uwsd_log_err(NULL, "String value too long");
+
+				return NULL;
+			}
+
+			if (esc) {
+				switch (**input) {
+				case 'x':
+					if (!isxdigit((*input)[1]) || !isxdigit((*input)[2])) {
+						uwsd_log_err(NULL, "Invalid escape sequence");
+
+						return NULL;
+					}
+
+					*output++ = hex((*input)[1]) * 16 + hex((*input)[2]);
+					(*input) += 2;
+					break;
+
+				case 'a': *output++ = '\a';    break;
+				case 'b': *output++ = '\b';    break;
+				case 'e': *output++ = '\033';  break;
+				case 'f': *output++ = '\f';    break;
+				case 'n': *output++ = '\n';    break;
+				case 'r': *output++ = '\r';    break;
+				case 't': *output++ = '\t';    break;
+				case 'v': *output++ = '\v';    break;
+				default:  *output++ = **input; break;
+				}
+
+				esc = false;
+			}
+			else if (**input == '\\') {
+				esc = true;
+			}
+			else if (**input != q) {
+				*output++ = **input;
+			}
+			else {
+				(*input)++;
+				*output = 0;
+
+				return buf;
+			}
+		}
+
+		uwsd_log_err(NULL, "Unterminated string");
+
+		return NULL;
+	}
+	else {
+		for (output = buf; !strchr(separator, **input); (*input)++) {
+			if (output - buf == sizeof(buf)) {
+				uwsd_log_err(NULL, "String value too long");
+
+				return NULL;
+			}
+
+			*output++ = **input;
+		}
+
+		while (output > buf && isspace(output[-1]))
+			output--;
+
+		*output = 0;
+	}
+
+	return buf;
+}
+
+
 static void
 config_free_object(const config_block_t *spec, void *base);
 
@@ -509,96 +593,52 @@ config_parse_block(const char **input, const config_block_t *spec, void *base);
 static bool
 config_parse_value(const char **input, const config_prop_t *prop, void *base)
 {
-	char buf[PATH_MAX] = { 0 }, q, *e;
+	char buf[PATH_MAX] = { 0 }, *e, **l;
 	size_t buflen = 0;
 	const char *p;
 	void *obj;
-	bool esc;
 	int n;
-
-	skipws(input);
-
-	if (**input == '"' || **input == '\'') {
-		for (q = **input, p = ++(*input), esc = false; *p; p = ++(*input)) {
-			if (buflen == sizeof(buf) - 1)
-				return parse_error("String value too long");
-
-			if (esc) {
-				switch (*p) {
-				case 'x':
-					if (!isxdigit(p[1]) || !isxdigit(p[2]))
-						return parse_error("Invalid escape sequence");
-
-					buf[buflen++] = hex(p[1]) * 16 + hex(p[2]);
-					p = ((*input) += 2);
-					break;
-
-				case 'a': buf[buflen++] = '\a';   break;
-				case 'b': buf[buflen++] = '\b';   break;
-				case 'e': buf[buflen++] = '\033'; break;
-				case 'f': buf[buflen++] = '\f';   break;
-				case 'n': buf[buflen++] = '\n';   break;
-				case 'r': buf[buflen++] = '\r';   break;
-				case 't': buf[buflen++] = '\t';   break;
-				case 'v': buf[buflen++] = '\v';   break;
-				default:  buf[buflen++] = *p;     break;
-				}
-
-				esc = false;
-			}
-			else if (*p == '\\') {
-				esc = true;
-			}
-			else if (*p == q) {
-				(*input)++;
-				break;
-			}
-			else {
-				buf[buflen++] = *p;
-			}
-		}
-	}
-	else {
-		p = *input + strcspn(*input, "{;\n");
-
-		while (p > *input && isspace(p[-1]))
-			p--;
-
-		if (p - *input >= (ssize_t)sizeof(buf))
-			return parse_error("Value too long");
-
-		buflen = p - *input;
-		memcpy(buf, *input, buflen);
-
-		*input = p;
-	}
 
 	switch (prop->type) {
 	case STRING:
-		if (!buflen)
+		p = extract_string(input, ";");
+
+		if (!p || !*p)
 			return parse_error("Expecting non-empty value");
 
-		char_ptr(prop, base) = strdup(buf);
+		char_ptr(prop, base) = strdup(p);
 
 		break;
 
 	case BOOLEAN:
-		if (!buflen ||
-		    !strcmp(buf, "true") || !strcmp(buf, "yes") ||
-		    !strcmp(buf, "on") || !strcmp(buf, "enabled"))
-			bool_ptr(prop, base) = true;
-		else if (!strcmp(buf, "false") || !strcmp(buf, "no") ||
-		    !strcmp(buf, "off") || !strcmp(buf, "disabled"))
-			bool_ptr(prop, base) = false;
-		else
+		p = extract_string(input, ";");
+
+		if (!p)
+			return false;
+
+		for (l = (char *[]){
+			"", "\1", "true", "\1", "yes", "\1", "on", "\1", "enabled", "\1",
+			"false", "\0", "no", "\0", "off", "\0", "disabled", "\0",
+			NULL, NULL
+		}; *l; l += 2) {
+			if (!strcmp(p, *l)) {
+				e = *l;
+				break;
+			}
+		}
+
+		if (!e)
 			return parse_error("Expecting 'true', 'yes', 'on', 'enabled', 'false', 'no', 'off' or 'disabled'");
+
+		bool_ptr(prop, base) = *e;
 
 		break;
 
 	case INTEGER:
-		n = strtol(buf, &e, 0);
+		p = extract_string(input, ";");
+		n = p ? strtol(p, &e, 0) : 0;
 
-		if (e == buf || *e)
+		if (!p || e == buf || *e)
 			return parse_error("Expecting number");
 
 		int_ptr(prop, base) = n;
@@ -606,8 +646,10 @@ config_parse_value(const char **input, const config_prop_t *prop, void *base)
 		break;
 
 	case ENUM:
+		e = extract_string(input, ";");
+
 		for (n = 0, p = prop->data.values[0]; p; p = prop->data.values[++n]) {
-			if (!strncmp(buf, p, strlen(buf))) {
+			if (e && *e && !strncmp(e, p, strlen(e))) {
 				int_ptr(prop, base) = n;
 				break;
 			}
@@ -630,6 +672,30 @@ config_parse_value(const char **input, const config_prop_t *prop, void *base)
 
 		break;
 
+	case LIST:
+		n = 0;
+		l = NULL;
+
+		while (true) {
+			e = extract_string(input, ",;");
+
+			if (!e)
+				return false;
+
+			if (*e) {
+				l = xrealloc(l, sizeof(char *) * (n + 2));
+				l[n++] = xstrdup(e);
+				l[n] = NULL;
+			}
+
+			if (!skipchar(input, ','))
+				break;
+		}
+
+		charptr_ptr(prop, base) = l;
+
+		break;
+
 	case NESTED_SINGLE:
 		if (char_ptr(prop, base))
 			return parse_error("The '%s' property may only appear once within this block", prop->name);
@@ -637,7 +703,12 @@ config_parse_value(const char **input, const config_prop_t *prop, void *base)
 		/* fall through */
 
 	case NESTED_MULTIPLE:
-		obj = config_alloc_object(prop->data.nested, buflen ? buf : NULL);
+		e = extract_string(input, ";{");
+
+		if (!e)
+			return false;
+
+		obj = config_alloc_object(prop->data.nested, *e ? e : NULL);
 
 		if (!obj)
 			return false;
@@ -934,8 +1005,8 @@ static bool
 validate_action(void *obj)
 {
 	uwsd_action_t *action = obj;
+	char *path, **e;
 	struct stat s;
-	char *path;
 
 	switch (action->type) {
 	case UWSD_ACTION_FILE:
@@ -970,8 +1041,9 @@ validate_action(void *obj)
 		if (!S_ISDIR(s.st_mode))
 			return parse_error("Path '%s' exists but is not a directory", action->data.directory.path);
 
-		if (strchr(action->data.directory.index_filename ?: "", '/'))
-			return parse_error("The 'index-filename' value must not contain any slashes");
+		for (e = action->data.directory.index_filenames; e && *e; e++)
+			if (strchr(*e, '/'))
+				return parse_error("The 'index-filename' values must not contain any slashes");
 
 		break;
 

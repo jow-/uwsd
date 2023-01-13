@@ -56,7 +56,7 @@ typedef struct uwsd_action {
 		{
 			char *path;
 			char *content_type;
-			char *index_filename;
+			char **index_filenames;
 			bool directory_listing;
 		} directory;
 		struct {

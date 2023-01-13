@@ -91,10 +91,9 @@ servername_cb(SSL *ssl, int *al, void *arg)
 }
 
 static SSL_CTX *
-ssl_create_context(const char *protocols, const char *ciphers)
+ssl_create_context(char *const *protocols, const char *ciphers)
 {
 	SSL_CTX *tls_ctx = NULL;
-	const char *p;
 	long options;
 
 	if (!ssl_initialized) {
@@ -121,35 +120,33 @@ ssl_create_context(const char *protocols, const char *ciphers)
 		          SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 |
 		          SSL_OP_NO_TLSv1_2 | SSL_OP_NO_TLSv1_3;
 
-		for (protocols += strspn(protocols, " \t\r\n"); *protocols; ) {
-			p = protocols + strcspn(protocols, " \t\r\n");
-
-			if (!strspncmp(protocols, p, "SSLv2")) {
+		while (*protocols) {
+			if (!strcmp(*protocols, "SSLv2")) {
 				options &= ~SSL_OP_NO_SSLv2;
 			}
-			else if (!strspncmp(protocols, p, "SSLv3")) {
+			else if (!strcmp(*protocols, "SSLv3")) {
 				options &= ~SSL_OP_NO_SSLv3;
 			}
-			else if (!strspncmp(protocols, p, "TLSv1")) {
+			else if (!strcmp(*protocols, "TLSv1")) {
 				options &= ~SSL_OP_NO_TLSv1;
 			}
-			else if (!strspncmp(protocols, p, "TLSv1.1")) {
+			else if (!strcmp(*protocols, "TLSv1.1")) {
 				options &= ~SSL_OP_NO_TLSv1_1;
 			}
-			else if (!strspncmp(protocols, p, "TLSv1.2")) {
+			else if (!strcmp(*protocols, "TLSv1.2")) {
 				options &= ~SSL_OP_NO_TLSv1_2;
 			}
-			else if (!strspncmp(protocols, p, "TLSv1.3")) {
+			else if (!strcmp(*protocols, "TLSv1.3")) {
 				options &= ~SSL_OP_NO_TLSv1_3;
 			}
 			else {
-				uwsd_ssl_err(NULL, "Unrecognized SSL protocol '%.*s'", (int)(p - protocols), protocols);
+				uwsd_ssl_err(NULL, "Unrecognized SSL protocol '%s'", *protocols);
 				SSL_CTX_free(tls_ctx);
 
 				return NULL;
 			}
 
-			protocols = p + strspn(p, " \t\r\n");
+			protocols++;
 		}
 	}
 	else {
