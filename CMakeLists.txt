@@ -68,3 +68,5 @@ IF(crypt STREQUAL "crypt-NOTFOUND")
 ENDIF()
 
 TARGET_LINK_LIBRARIES(uwsd ${ubox} ${ucode} ${jsonc} ${crypt} ${UWSD_SSL_LIBRARIES})
+
+INSTALL(TARGETS uwsd RUNTIME DESTINATION sbin)
