@@ -1177,7 +1177,7 @@ http_file_serve(uwsd_client_context_t *cl)
 		goto error404;
 	}
 
-	rv = send_file(cl, path, NULL, &s);
+	rv = send_file(cl, path, cl->action->data.file.content_type, &s);
 
 	switch (rv ? 0 : errno) {
 	case 0:      return true;
