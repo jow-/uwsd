@@ -87,6 +87,10 @@ uwsd_log(uwsd_log_priority_t prio, uwsd_log_channel_t chan, uwsd_client_context_
 	case UWSD_LOG_SSL:
 		fprintf(stderr, "[SSL] ");
 		break;
+
+	case UWSD_LOG_SCRIPT:
+		fprintf(stderr, "[SCRIPT] ");
+		break;
 	}
 
 	va_start(ap, fmt);

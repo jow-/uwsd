@@ -845,10 +845,10 @@ handle_restart(struct uloop_timeout *utm)
 {
 	uwsd_action_t *action = container_of(utm, uwsd_action_t, data.script.timeout);
 
-	uwsd_log_warn(NULL, "Restarting script worker '%s'", action->data.script.path);
+	fprintf(stderr, "Restarting script worker '%s'\n", action->data.script.path);
 
 	if (!script_context_start(action)) {
-		uwsd_log_err(NULL, "Failed to start script worker '%s', scheduling restart",
+		fprintf(stderr, "Failed to start script worker '%s', scheduling restart\n",
 			action->data.script.path);
 
 		uloop_timeout_set(&action->data.script.timeout, 1000);
@@ -860,7 +860,7 @@ handle_termination(struct uloop_process *proc, int exitcode)
 {
 	uwsd_action_t *action = container_of(proc, uwsd_action_t, data.script.proc);
 
-	uwsd_log_err(NULL, "Script worker '%s' terminated with code %d",
+	fprintf(stderr, "Script worker '%s' terminated with code %d\n",
 		action->data.script.path, exitcode);
 
 	action->data.script.timeout.cb = handle_restart;
@@ -1013,13 +1013,13 @@ handle_request(struct uloop_fd *ufd, unsigned int events)
 			if (errno == EINTR)
 				continue;
 
-			uwsd_log_err(NULL, "Internal receive error: %m");
+			fprintf(stderr, "Internal receive error: %m\n");
 
 			return;
 		}
 
 		if (rlen == 0) {
-			uwsd_log_warn(NULL, "Backend connection closed by peer");
+			fprintf(stderr, "Backend connection closed by peer\n");
 			script_conn_close(conn, 0, NULL);
 
 			return;
@@ -1095,8 +1095,11 @@ handle_client(struct uloop_fd *ufd, unsigned int events)
 
 	fd = accept(ufd->fd, NULL, NULL);
 
-	if (fd == -1)
-		return uwsd_log_err(NULL, "Unable to accept client connection: %m");
+	if (fd == -1) {
+		fprintf(stderr, "Unable to accept client connection: %m\n");
+
+		return;
+	}
 
 	conn = xalloc(sizeof(*conn));
 	conn->ctx = ctx;
@@ -1106,6 +1109,50 @@ handle_client(struct uloop_fd *ufd, unsigned int events)
 
 	uloop_fd_add(&conn->ufd, ULOOP_READ | ULOOP_BLOCKING);
 	list_add_tail(&conn->list, &requests);
+}
+
+static void
+handle_stdio(uwsd_action_t *action, int fd, uwsd_log_priority_t prio)
+{
+	char buf[256] = { 0 }, *p, *nl;
+	int len;
+
+	if (read(fd, buf, sizeof(buf) - 1) <= 0)
+		return;
+
+	p = buf;
+	nl = strchr(buf, '\n');
+
+	while (true) {
+		len = nl ? (size_t)(nl - p) : strlen(p);
+
+		if (len)
+			uwsd_log(prio, UWSD_LOG_SCRIPT, NULL, "[%s] %.*s",
+				basename(action->data.script.path),
+				len, p);
+
+		if (!nl)
+			break;
+
+		p = nl + 1;
+		nl = strchr(p, '\n');
+	}
+}
+
+static void
+handle_stdout(struct uloop_fd *ufd, unsigned int events)
+{
+	uwsd_action_t *action = container_of(ufd, uwsd_action_t, data.script.stdout);
+
+	handle_stdio(action, ufd->fd, UWSD_PRIO_INFO);
+}
+
+static void
+handle_stderr(struct uloop_fd *ufd, unsigned int events)
+{
+	uwsd_action_t *action = container_of(ufd, uwsd_action_t, data.script.stderr);
+
+	handle_stdio(action, ufd->fd, UWSD_PRIO_WARN);
 }
 
 static int
@@ -1129,7 +1176,7 @@ script_context_run(const char *sockpath, const char *scriptpath)
 	uc_source_put(source);
 
 	if (!prog) {
-		uwsd_log_err(NULL, "Failed to compile handler script: %s", err);
+		fprintf(stderr, "Failed to compile handler script: %s\n", err);
 
 		return false;
 	}
@@ -1158,7 +1205,7 @@ script_context_run(const char *sockpath, const char *scriptpath)
 
 	case STATUS_EXIT:
 		rc = (int)ucv_uint64_get(result);
-		uwsd_log_err(NULL, "Handler script exited with code %d", rc);
+		fprintf(stderr, "Handler script exited with code %d\n", rc);
 		ucv_put(result);
 
 		return rc;
@@ -1177,12 +1224,31 @@ script_context_run(const char *sockpath, const char *scriptpath)
 	return 0;
 }
 
+static void
+xclose(int fd)
+{
+	if (fd > 2)
+		close(fd);
+}
+
 static bool
 script_context_start(uwsd_action_t *action)
 {
+	int fd, opipe[2] = { -1, -1 }, epipe[2] = { -1, -1 };
 	char ibuf[32];
 	pid_t pid;
-	int fd;
+
+	if (pipe(opipe) == -1 || pipe(epipe) == -1) {
+		uwsd_log_err(NULL, "Unable to spawn pipes for script process '%s': %m",
+			action->data.script.path);
+
+		xclose(opipe[0]);
+		xclose(opipe[1]);
+		xclose(epipe[0]);
+		xclose(epipe[1]);
+
+		return false;
+	}
 
 	pid = fork();
 
@@ -1191,18 +1257,28 @@ script_context_start(uwsd_action_t *action)
 		uwsd_log_err(NULL, "Unable to fork script process '%s': %m",
 			action->data.script.path);
 
+		xclose(opipe[0]);
+		xclose(opipe[1]);
+		xclose(epipe[0]);
+		xclose(epipe[1]);
+
 		return false;
 
 	case 0:
-		fd = open("/dev/null", O_RDWR);
+		fd = open("/dev/null", O_RDONLY);
 
 		if (fd != -1) {
 			dup2(fd, 0);
-			dup2(fd, 1);
-
-			if (fd > 2)
-				close(fd);
+			xclose(fd);
 		}
+
+		dup2(opipe[1], 1);
+		xclose(opipe[0]);
+		xclose(opipe[1]);
+
+		dup2(epipe[1], 2);
+		xclose(epipe[0]);
+		xclose(epipe[1]);
 
 		uloop_done();
 
@@ -1220,7 +1296,7 @@ script_context_start(uwsd_action_t *action)
 
 		execl(getenv("UWSD_EXECUTABLE"), getenv("UWSD_EXECUTABLE"), NULL);
 
-		uwsd_log_err(NULL, "Failed to execute '%s': %m", getenv("UWSD_EXECUTABLE"));
+		fprintf(stderr, "Failed to execute '%s': %m\n", getenv("UWSD_EXECUTABLE"));
 		exit(-1);
 		break;
 
@@ -1228,6 +1304,17 @@ script_context_start(uwsd_action_t *action)
 		action->data.script.proc.pid = pid;
 		action->data.script.proc.cb = handle_termination;
 		uloop_process_add(&action->data.script.proc);
+
+		action->data.script.stdout.fd = opipe[0];
+		action->data.script.stdout.cb = handle_stdout;
+		uloop_fd_add(&action->data.script.stdout, ULOOP_READ);
+
+		action->data.script.stderr.fd = epipe[0];
+		action->data.script.stderr.cb = handle_stderr;
+		uloop_fd_add(&action->data.script.stderr, ULOOP_READ);
+
+		xclose(opipe[1]);
+		xclose(epipe[1]);
 		break;
 	}
 

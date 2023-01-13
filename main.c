@@ -116,8 +116,10 @@ main(int argc, char **argv)
 				channels |= (1 << UWSD_LOG_WS);
 			else if (!strcmp(optarg, "ssl"))
 				channels |= (1 << UWSD_LOG_SSL);
+			else if (!strcmp(optarg, "script"))
+				channels |= (1 << UWSD_LOG_SCRIPT);
 			else
-				fatal("Invalid log channel, expecting 'global', 'http', 'ws' or 'ssl'");
+				fatal("Invalid log channel, expecting 'global', 'http', 'ws', 'ssl' or 'script'");
 		}
 		else if (opt == -1) {
 			break;

@@ -33,6 +33,7 @@ typedef enum {
 	UWSD_LOG_HTTP,
 	UWSD_LOG_WS,
 	UWSD_LOG_SSL,
+	UWSD_LOG_SCRIPT,
 } uwsd_log_channel_t;
 
 extern uwsd_log_priority_t uwsd_logging_priority;
