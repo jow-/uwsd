@@ -29,12 +29,29 @@
 #include "file.h"
 #include "http.h"
 #include "mimetypes.h"
+#include "config.h"
 
 __hidden const char *
 uwsd_file_mime_lookup(const char *path)
 {
 	size_t elen, plen = strlen(path);
 	const uwsd_mimetype_t *m;
+	char **e;
+
+	for (e = config->mimetypes; e && *e; e++) {
+		elen = strcspn(*e, "=");
+
+		if (plen < elen)
+			continue;
+
+		if (plen > elen && path[plen - elen - 1] != '/' && path[plen - elen - 1] != '.')
+			continue;
+
+		if (strncasecmp(path + plen - elen, *e, elen))
+			continue;
+
+		return *e + elen + 1;
+	}
 
 	for (m = uwsd_mime_types; m->extn; m++) {
 		elen = strlen(m->extn);
@@ -42,10 +59,10 @@ uwsd_file_mime_lookup(const char *path)
 		if (plen < elen)
 			continue;
 
-		if (strncasecmp(path + plen - elen, m->extn, elen))
+		if (plen > elen && path[plen - elen - 1] != '/' && path[plen - elen - 1] != '.')
 			continue;
 
-		if (plen > elen && path[plen - elen - 1] != '/' && path[plen - elen - 1] != '.')
+		if (strncasecmp(path + plen - elen, m->extn, elen))
 			continue;
 
 		return m->mime;
@@ -197,6 +214,26 @@ dirent_cmp(const struct dirent **a, const struct dirent **b)
 	return alphasort(a, b);
 }
 
+static char *
+filetype_lookup(const char *path)
+{
+	const char *mime, *p;
+	static char buf[32];
+
+	mime = uwsd_file_mime_lookup(path);
+	p = strchr(mime, '/');
+
+	if (!strcmp(mime, "application/octet-stream"))
+		return "unknown type";
+
+	if (!strspncmp(mime, p, "application"))
+		return "binary file";
+
+	snprintf(buf, sizeof(buf), "%.*s file", (int)(p - mime), mime);
+
+	return buf;
+}
+
 static void
 print_entry(FILE *tmp, struct dirent *e,
             const char *physpath, const char *urlpath)
@@ -218,7 +255,7 @@ print_entry(FILE *tmp, struct dirent *e,
 		if (S_ISDIR(s.st_mode))
 			mode |= S_IXOTH;
 		else
-			type = uwsd_file_mime_lookup(p);
+			type = filetype_lookup(p);
 	}
 	else {
 		s.st_mode = 0;

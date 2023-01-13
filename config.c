@@ -389,6 +389,8 @@ static const config_block_t toplevel_spec = {
 	.properties = {
 		{ "default-charset", STRING,
 			offsetof(uwsd_config_t, default_charset), { 0 } },
+		{ "mimetypes", LIST,
+			offsetof(uwsd_config_t, mimetypes), { 0 } },
 		{ "backend", NESTED_MULTIPLE,
 			offsetof(uwsd_config_t, backends), SUBSPEC(backend_spec) },
 		{ "listen", NESTED_MULTIPLE,
