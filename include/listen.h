@@ -62,7 +62,7 @@ typedef struct uwsd_action {
 		struct {
 			struct uloop_timeout timeout;
 			struct uloop_process proc;
-			struct uloop_fd stdout, stderr;
+			struct uloop_fd out, err;
 			struct sockaddr_un sun;
 			char *path;
 		} script;

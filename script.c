@@ -1142,7 +1142,7 @@ handle_stdio(uwsd_action_t *action, int fd, uwsd_log_priority_t prio)
 static void
 handle_stdout(struct uloop_fd *ufd, unsigned int events)
 {
-	uwsd_action_t *action = container_of(ufd, uwsd_action_t, data.script.stdout);
+	uwsd_action_t *action = container_of(ufd, uwsd_action_t, data.script.out);
 
 	handle_stdio(action, ufd->fd, UWSD_PRIO_INFO);
 }
@@ -1150,7 +1150,7 @@ handle_stdout(struct uloop_fd *ufd, unsigned int events)
 static void
 handle_stderr(struct uloop_fd *ufd, unsigned int events)
 {
-	uwsd_action_t *action = container_of(ufd, uwsd_action_t, data.script.stderr);
+	uwsd_action_t *action = container_of(ufd, uwsd_action_t, data.script.err);
 
 	handle_stdio(action, ufd->fd, UWSD_PRIO_WARN);
 }
@@ -1305,13 +1305,13 @@ script_context_start(uwsd_action_t *action)
 		action->data.script.proc.cb = handle_termination;
 		uloop_process_add(&action->data.script.proc);
 
-		action->data.script.stdout.fd = opipe[0];
-		action->data.script.stdout.cb = handle_stdout;
-		uloop_fd_add(&action->data.script.stdout, ULOOP_READ);
+		action->data.script.out.fd = opipe[0];
+		action->data.script.out.cb = handle_stdout;
+		uloop_fd_add(&action->data.script.out, ULOOP_READ);
 
-		action->data.script.stderr.fd = epipe[0];
-		action->data.script.stderr.cb = handle_stderr;
-		uloop_fd_add(&action->data.script.stderr, ULOOP_READ);
+		action->data.script.err.fd = epipe[0];
+		action->data.script.err.cb = handle_stderr;
+		uloop_fd_add(&action->data.script.err, ULOOP_READ);
 
 		xclose(opipe[1]);
 		xclose(epipe[1]);
