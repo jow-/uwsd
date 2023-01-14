@@ -197,7 +197,9 @@ ws_downstream_rx(uwsd_client_context_t *cl)
 		uwsd_state_transition(cl, cl->state);
 	}
 
-	for (off = cl->rxbuf.pos; off < cl->rxbuf.end; off++, cl->rxbuf.pos++) {
+	for (off = cl->rxbuf.pos;
+	     off < cl->rxbuf.end && cl->ws.state != STATE_WS_COMPLETE;
+	     off++, cl->rxbuf.pos++) {
 		switch (cl->ws.state) {
 		case STATE_WS_HEADER:
 			cl->ws.buf.data[cl->ws.buflen++] = *off;
@@ -262,18 +264,12 @@ ws_downstream_rx(uwsd_client_context_t *cl)
 			if (cl->ws.buflen == sizeof(cl->ws.buf.mask)) {
 				memcpy(cl->ws.mask, cl->ws.buf.mask, sizeof(cl->ws.mask));
 
-				cl->rxbuf.sent = cl->rxbuf.pos + 1;
-
 				if (!ws_verify_frame(cl))
 					return false;
 
-				if (!cl->ws.len) {
-					ws_state_transition(cl, STATE_WS_COMPLETE);
+				cl->rxbuf.sent = cl->rxbuf.pos + 1;
 
-					return true;
-				}
-
-				ws_state_transition(cl, STATE_WS_PAYLOAD);
+				ws_state_transition(cl, cl->ws.len ? STATE_WS_PAYLOAD : STATE_WS_COMPLETE);
 			}
 
 			break;
@@ -281,13 +277,8 @@ ws_downstream_rx(uwsd_client_context_t *cl)
 		case STATE_WS_PAYLOAD:
 			*off ^= cl->ws.mask[cl->ws.buflen++ % sizeof(cl->ws.mask)];
 
-			if (cl->ws.buflen == cl->ws.len) {
-				cl->rxbuf.pos++;
-
+			if (cl->ws.buflen == cl->ws.len)
 				ws_state_transition(cl, STATE_WS_COMPLETE);
-
-				return true;
-			}
 
 			break;
 
