@@ -65,6 +65,7 @@ typedef struct uwsd_action {
 			struct uloop_fd out, err;
 			struct sockaddr_un sun;
 			char *path;
+			char **env;
 		} script;
 		struct {
 			int connect_timeout, transfer_timeout, idle_timeout;

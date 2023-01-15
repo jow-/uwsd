@@ -260,6 +260,8 @@ static const config_block_t run_script_spec = {
 	.validate = validate_action,
 	.free = free_action,
 	.properties = {
+		{ "environment", LIST,
+			offsetof(uwsd_action_t, data.script.env), { 0 } },
 		{ 0 }
 	}
 };
@@ -897,15 +899,10 @@ static bool
 parse_run_script(void *obj, const char *label)
 {
 	uwsd_action_t *action = obj;
-	char *path = NULL;
-	bool rv;
 
 	action->type = UWSD_ACTION_SCRIPT;
-	rv = check_path(label, false, &path) && uwsd_script_init(action, path);
 
-	free(path);
-
-	return rv;
+	return check_path(label, false, &action->data.script.path);
 }
 
 static bool
@@ -1050,7 +1047,7 @@ validate_action(void *obj)
 		break;
 
 	case UWSD_ACTION_SCRIPT:
-		break;
+		return uwsd_script_init(action, action->data.script.path);
 
 	case UWSD_ACTION_TCP_PROXY:
 	case UWSD_ACTION_UDP_PROXY:

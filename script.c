@@ -1235,7 +1235,7 @@ static bool
 script_context_start(uwsd_action_t *action)
 {
 	int fd, opipe[2] = { -1, -1 }, epipe[2] = { -1, -1 };
-	char ibuf[32];
+	char ibuf[32], **e;
 	pid_t pid;
 
 	if (pipe(opipe) == -1 || pipe(epipe) == -1) {
@@ -1281,6 +1281,9 @@ script_context_start(uwsd_action_t *action)
 		xclose(epipe[1]);
 
 		uloop_done();
+
+		for (e = action->data.script.env; e && *e; e++)
+			putenv(*e);
 
 		setenv("UWSD_WORKER_SOCKET",
 			action->data.script.sun.sun_path + !action->data.script.sun.sun_path[0], 1);
@@ -1330,7 +1333,6 @@ uwsd_script_init(uwsd_action_t *action, const char *path)
 	struct sockaddr_un *sun = &action->data.script.sun;
 
 	sun->sun_family = AF_UNIX;
-	action->data.script.path = xstrdup(path);
 
 #ifdef __linux__
 	snprintf(sun->sun_path, sizeof(sun->sun_path), "%c/uwsd/%u/%zx",

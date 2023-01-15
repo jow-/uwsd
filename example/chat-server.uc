@@ -15,6 +15,8 @@
 import { timer } from 'uloop';
 
 const connected_clients = {};
+const max_message_size = +getenv('MAX_MESSAGE_SIZE') || 4096;
+const status_interval = +getenv('STATUS_INTERVAL') || 5000;
 
 function unicast(conn, msg) {
 	conn.send(`${{...msg, time: time()}}`);
@@ -34,7 +36,7 @@ function broadcast_status() {
 		msg: `The time is now ${ts}, there are ${length(connected_clients)} clients connected`
 	});
 
-	timer(5000, broadcast_status);
+	timer(status_interval, broadcast_status);
 }
 
 // This callback is invoked when a WebSocket handshake is received,
@@ -94,7 +96,7 @@ export function onData(connection, data, final)
 	let ctx = connection.data();
 
 	// Reject too long messages
-	if (length(ctx.buffer) + length(data) > 4096)
+	if (length(ctx.buffer) + length(data) > max_message_size)
 		return connection.close(1009, 'Message too big');
 
 	// Buffer data in context
@@ -205,4 +207,4 @@ export function onClose(connection, code, reason)
 };
 
 // Send current status to all connected clients every 5 seconds
-timer(5000, broadcast_status);
+timer(status_interval, broadcast_status);
