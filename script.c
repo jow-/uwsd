@@ -30,6 +30,7 @@
 #include <libubox/uloop.h>
 #include <ucode/compiler.h>
 #include <ucode/lib.h>
+#include <ucode/util.h>
 
 #include "state.h"
 #include "script.h"
@@ -37,6 +38,7 @@
 #include "client.h"
 #include "listen.h"
 #include "log.h"
+#include "teeny-sha1.h"
 
 
 static LIST_HEAD(requests);
@@ -95,6 +97,17 @@ typedef struct {
 		uint8_t data[16384];
 	} buf;
 	uc_value_t *req, *hdr, *conn, *data, *subproto;
+	struct {
+		uwsd_ws_msg_format_t format;
+		union {
+			uc_stringbuf_t *buffer;
+			struct {
+				json_tokener *tok;
+				json_object *obj;
+			} json;
+		} data;
+		size_t limit, size;
+	} reassembly;
 } script_connection_t;
 
 
@@ -361,22 +374,128 @@ script_conn_ws_handshake(script_connection_t *conn, const char *acceptkey)
 	return true;
 }
 
+static void
+script_conn_reset_reassembly(script_connection_t *conn)
+{
+	switch (conn->reassembly.format) {
+	case UWSD_WS_MSG_FORMAT_JSON:
+		if (conn->reassembly.data.json.tok)
+			json_tokener_free(conn->reassembly.data.json.tok);
+
+		if (conn->reassembly.data.json.obj)
+			json_object_put(conn->reassembly.data.json.obj);
+
+		conn->reassembly.data.json.tok = NULL;
+		conn->reassembly.data.json.obj = NULL;
+		break;
+
+	case UWSD_WS_MSG_FORMAT_BUFFERED:
+		if (conn->reassembly.data.buffer)
+			printbuf_free(conn->reassembly.data.buffer);
+
+		conn->reassembly.data.buffer = NULL;
+		break;
+
+	default:
+		break;
+	}
+
+	conn->reassembly.size = 0;
+}
+
 static bool
 script_conn_ws_data(script_connection_t *conn, const void *data, size_t len, bool final)
 {
 	uc_vm_t *vm = &conn->ctx->vm;
+	enum json_tokener_error err;
 	uc_exception_type_t ex;
+	json_tokener *tok;
 	uc_value_t *ctx;
 
 	if (!conn->ctx->onData)
 		return true;
 
-	uc_vm_stack_push(vm, ucv_get(conn->ctx->onData));
-	uc_vm_stack_push(vm, ucv_get(conn->conn));
-	uc_vm_stack_push(vm, ucv_string_new_length(data, len));
-	uc_vm_stack_push(vm, ucv_boolean_new(final));
+	if (conn->reassembly.size + len < conn->reassembly.size /* overflow */ ||
+	    (conn->reassembly.limit > 0 &&
+	     conn->reassembly.size + len > conn->reassembly.limit))
+	{
+		ws_error_send(conn, true, STATUS_MESSAGE_TOO_BIG,
+			"Message exceeds limit of %zu bytes", conn->reassembly.limit);
 
-	ex = uc_vm_call(vm, false, 3);
+		return false;
+	}
+
+	switch (conn->reassembly.format) {
+	case UWSD_WS_MSG_FORMAT_BUFFERED:
+		if (!conn->reassembly.data.buffer)
+			conn->reassembly.data.buffer = ucv_stringbuf_new();
+
+		ucv_stringbuf_addstr(conn->reassembly.data.buffer, data, len);
+
+		conn->reassembly.size += len;
+
+		if (!final)
+			return true;
+
+		uc_vm_stack_push(vm, ucv_get(conn->ctx->onData));
+		uc_vm_stack_push(vm, ucv_get(conn->conn));
+		uc_vm_stack_push(vm, ucv_stringbuf_finish(conn->reassembly.data.buffer));
+
+		ex = uc_vm_call(vm, false, 2);
+
+		conn->reassembly.data.buffer = NULL;
+
+		break;
+
+	case UWSD_WS_MSG_FORMAT_JSON:
+		tok = conn->reassembly.data.json.tok;
+
+		if (!tok) {
+			tok = xjs_new_tokener();
+			conn->reassembly.data.json.tok = tok;
+		}
+
+		conn->reassembly.data.json.obj = json_tokener_parse_ex(tok, data, len);
+
+		err = json_tokener_get_error(tok);
+
+		if (final && err == json_tokener_continue)
+			err = json_tokener_error_parse_eof;
+		else if (final && err == json_tokener_success && json_tokener_get_parse_end(tok) < len)
+			err = json_tokener_error_parse_unexpected;
+
+		if (err != json_tokener_success) {
+			ws_error_send(conn, true, STATUS_BAD_ENCODING,
+				"JSON parse error: %s", json_tokener_error_desc(err));
+
+			return false;
+		}
+
+		conn->reassembly.size += len;
+
+		if (!final)
+			return true;
+
+		uc_vm_stack_push(vm, ucv_get(conn->ctx->onData));
+		uc_vm_stack_push(vm, ucv_get(conn->conn));
+		uc_vm_stack_push(vm, ucv_from_json(vm, conn->reassembly.data.json.obj));
+
+		ex = uc_vm_call(vm, false, 2);
+
+		break;
+
+	default:
+		uc_vm_stack_push(vm, ucv_get(conn->ctx->onData));
+		uc_vm_stack_push(vm, ucv_get(conn->conn));
+		uc_vm_stack_push(vm, ucv_string_new_length(data, len));
+		uc_vm_stack_push(vm, ucv_boolean_new(final));
+
+		ex = uc_vm_call(vm, false, 3);
+
+		break;
+	}
+
+	script_conn_reset_reassembly(conn);
 
 	if (ex != EXCEPTION_NONE) {
 		ctx = ucv_object_get(ucv_array_get(vm->exception.stacktrace, 0), "context", NULL);
@@ -433,6 +552,8 @@ script_conn_close(script_connection_t *conn, uint16_t code, const char *msg)
 	list_del(&conn->list);
 
 	close(conn->ufd.fd);
+
+	script_conn_reset_reassembly(conn);
 
 	free(conn);
 }
@@ -556,6 +677,48 @@ uc_script_accept(uc_vm_t *vm, size_t nargs)
 }
 
 static uc_value_t *
+uc_script_expect(uc_vm_t *vm, size_t nargs)
+{
+	script_connection_t **conn = uc_fn_this("uwsd.connection");
+	uc_value_t *format = uc_fn_arg(0);
+	uc_value_t *limit = uc_fn_arg(1);
+	uwsd_ws_msg_format_t fmt;
+	size_t lim;
+
+	if (!conn || !*conn || (*conn)->proto != UWSD_PROTOCOL_WS)
+		return NULL;
+
+	if (ucv_type(format) != UC_STRING)
+		return NULL;
+
+	if (limit && ucv_type(limit) != UC_INTEGER)
+		return NULL;
+
+	if (!strcmp(ucv_string_get(format), "raw")) {
+		fmt = UWSD_WS_MSG_FORMAT_RAW;
+		lim = 0;
+	}
+	else if (!strcmp(ucv_string_get(format), "buffered")) {
+		fmt = UWSD_WS_MSG_FORMAT_BUFFERED;
+		lim = ucv_int64_get(limit);
+	}
+	else if (!strcmp(ucv_string_get(format), "json")) {
+		fmt = UWSD_WS_MSG_FORMAT_JSON;
+		lim = ucv_int64_get(limit);
+	}
+	else {
+		return NULL;
+	}
+
+	script_conn_reset_reassembly(*conn);
+
+	(*conn)->reassembly.format = fmt;
+	(*conn)->reassembly.limit = lim;
+
+	return ucv_boolean_new(true);
+}
+
+static uc_value_t *
 uc_script_data(uc_vm_t *vm, size_t nargs)
 {
 	script_connection_t **conn = uc_fn_this("uwsd.connection");
@@ -581,7 +744,7 @@ uc_script_send(uc_vm_t *vm, size_t nargs)
 	script_connection_t **conn = uc_fn_this("uwsd.connection");
 	uc_value_t *data = uc_fn_arg(0);
 
-	if (!conn || !*conn || (*conn)->proto != UWSD_PROTOCOL_WS)
+	if (!conn || !*conn || (*conn)->proto != UWSD_PROTOCOL_WS || (*conn)->state != STATE_WS)
 		return NULL;
 
 	if (ucv_type(data) != UC_STRING)
@@ -791,16 +954,67 @@ static const uc_function_list_t conn_fns[] = {
 	{ "data",    uc_script_data },
 
 	{ "reply",   uc_script_reply },
-	{ "accept",	 uc_script_accept },
-	{ "send",	 uc_script_send },
+	{ "accept",  uc_script_accept },
+	{ "expect",  uc_script_expect },
+	{ "send",    uc_script_send },
 
-	{ "close",	 uc_script_close }
+	{ "close",   uc_script_close }
 };
 
 static void
 close_conn(void *ud)
 {
 }
+
+
+static uc_value_t *
+uc_script_connections(uc_vm_t *vm, size_t nargs)
+{
+	script_connection_t *conn;
+	uc_value_t *rv;
+
+	rv = ucv_array_new(vm);
+
+	list_for_each_entry(conn, &requests, list) {
+		if (conn->conn)
+			ucv_array_push(rv, ucv_get(conn->conn));
+	}
+
+	return rv;
+}
+
+static uc_value_t *
+uc_script_sha1digest(uc_vm_t *vm, size_t nargs)
+{
+	uc_value_t *data = uc_fn_arg(0);
+	char *p, digest[41];
+	size_t len;
+
+	if (ucv_type(data) == UC_STRING) {
+		p = NULL;
+		len = ucv_string_length(data);
+	}
+	else if (data) {
+		p = ucv_to_string(vm, data);
+		len = strlen(p);
+	}
+	else {
+		p = NULL;
+		len = 0;
+	}
+
+	sha1digest(NULL, digest,
+		(uint8_t *)(len ? (p ? p : ucv_string_get(data)) : ""), len);
+
+	free(p);
+
+	return ucv_string_new(digest);
+}
+
+static const uc_function_list_t global_fns[] = {
+	{ "connections", uc_script_connections },
+	{ "sha1digest",  uc_script_sha1digest }
+};
 
 
 /* -- Scripting host implementation -------------------- */
@@ -1091,6 +1305,7 @@ handle_client(struct uloop_fd *ufd, unsigned int events)
 {
 	script_context_t *ctx = container_of(ufd, script_context_t, ufd);
 	script_connection_t *conn;
+	char *s;
 	int fd;
 
 	fd = accept(ufd->fd, NULL, NULL);
@@ -1106,6 +1321,12 @@ handle_client(struct uloop_fd *ufd, unsigned int events)
 	conn->req = ucv_object_new(&ctx->vm);
 	conn->ufd.fd = fd;
 	conn->ufd.cb = handle_request;
+
+	if ((s = getenv("UWSD_WS_MSG_FORMAT")) != NULL)
+		conn->reassembly.format = strtoul(s, NULL, 10);
+
+	if ((s = getenv("UWSD_WS_MSG_LIMIT")) != NULL)
+		conn->reassembly.limit = strtoul(s, NULL, 10);
 
 	uloop_fd_add(&conn->ufd, ULOOP_READ | ULOOP_BLOCKING);
 	list_add_tail(&conn->list, &requests);
@@ -1184,6 +1405,8 @@ script_context_run(const char *sockpath, const char *scriptpath)
 	uc_vm_init(&ctx.vm, NULL);
 	uc_vm_exception_handler_set(&ctx.vm, handle_exception);
 	uc_stdlib_load(uc_vm_scope_get(&ctx.vm));
+
+	uc_function_list_register(uc_vm_scope_get(&ctx.vm), global_fns);
 
 	rc = uc_vm_execute(&ctx.vm, prog, &result);
 
@@ -1296,6 +1519,12 @@ script_context_start(uwsd_action_t *action)
 
 		snprintf(ibuf, sizeof(ibuf), "%u", (unsigned int)uwsd_logging_channels);
 		setenv("UWSD_LOG_CHANNELS", ibuf, 1);
+
+		snprintf(ibuf, sizeof(ibuf), "%u", (unsigned int)action->data.script.msg_format);
+		setenv("UWSD_WS_MSG_FORMAT", ibuf, 1);
+
+		snprintf(ibuf, sizeof(ibuf), "%u", (unsigned int)action->data.script.msg_limit);
+		setenv("UWSD_WS_MSG_LIMIT", ibuf, 1);
 
 		execl(getenv("UWSD_EXECUTABLE"), getenv("UWSD_EXECUTABLE"), NULL);
 

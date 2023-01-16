@@ -14,8 +14,7 @@
 
 import { timer } from 'uloop';
 
-const connected_clients = {};
-const max_message_size = +getenv('MAX_MESSAGE_SIZE') || 4096;
+const nickname_min_len = +getenv('NICKNAME_MIN_LENGTH') || 3;
 const status_interval = +getenv('STATUS_INTERVAL') || 5000;
 
 function unicast(conn, msg) {
@@ -23,7 +22,7 @@ function unicast(conn, msg) {
 }
 
 function broadcast(msg) {
-	for (let key, client in connected_clients)
+	for (let client in connections())
 		unicast(client, msg);
 }
 
@@ -33,7 +32,7 @@ function broadcast_status() {
 
 	broadcast({
 		type: 'server-status',
-		msg: `The time is now ${ts}, there are ${length(connected_clients)} clients connected`
+		msg: `The time is now ${ts}, there are ${length(connections())} clients connected`
 	});
 
 	timer(status_interval, broadcast_status);
@@ -79,35 +78,35 @@ export function onConnect(connection, protocols)
 	// Store client specific context data
 	connection.data(ctx);
 
-	// Register connection
-	connected_clients[connection] = connection;
+	// Indicate that we would like to receive incoming messages as JSON
+	// with specified maximum size. Possible types for `connection.expect()`
+	// are `raw` (data provided as-is), `buffered` (reassemble messages) or
+	// `json` (messages are reassembled and parsed as JSON).
+	//
+	// The default is `raw`. Depending on the choice made here, the onData()
+	// callback is either being invoked with raw fragment data and boolean
+	// eof indicator, a complete message data string or a data structure
+	// parsed from JSON respectively.
+	//
+	// This call here is only made to illustrate the API, the same values
+	// are also preset in the server configuration file using the
+	// `ws-message-format` and `ws-message-limit` options.
+	connection.expect('json', 4096);
 
 	// Accept the ws handshake using the "uwsd.example.chat" sub protocol
 	return connection.accept('uwsd.example.chat');
 };
 
 // This callback is invoked when a chunk of WebSocket application data
-// is received. It receives the connection context, a string containing
-// the chunk of data and a boolean flag indicating the final chunk as
-// first, second and third argument respectively.
-export function onData(connection, data, final)
+// is received. It receives the connection context and, depending on the
+// expected format chosen by `connection.expect()`, either a string with
+// the chunk of data and a boolean flag indicating the end of message or
+// a string holding the complete message payload or a data structure
+// representing the parsed JSON respectively.
+export function onData(connection, msg)
 {
 	// Obtain or client specific context data
 	let ctx = connection.data();
-
-	// Reject too long messages
-	if (length(ctx.buffer) + length(data) > max_message_size)
-		return connection.close(1009, 'Message too big');
-
-	// Buffer data in context
-	ctx.buffer = ctx.buffer ? ctx.buffer + data : data;
-
-	// If this is not the final chunk, return
-	if (!final)
-		return;
-
-	// JSON decode message
-	let msg = json(ctx.buffer);
 
 	// Update some stats
 	ctx.seen = time();
@@ -121,15 +120,15 @@ export function onData(connection, data, final)
 	switch (msg?.command) {
 	case 'set-nickname':
 		// A simple nickname sanity check
-		if (!match(msg.value, /^[^[:cntrl:][:space:]]{3,}$/)) {
+		if (!match(msg.value, /^[^[:cntrl:][:space:]]+$/) || length(msg.value) < nickname_min_len) {
 			return unicast(connection, {
 				type: 'server-error',
-				msg: `Invalid nickname, must be at least 3 characters long and not contain spaces or control characters`
+				msg: `Invalid nickname, must be at least ${nickname_min_len} characters long and not contain spaces or control characters`
 			});
 		}
 
 		// Check for nickname uniqueness
-		for (let key, conn in connected_clients) {
+		for (let conn in connections()) {
 			if (conn != connection) {
 				if (conn.data()?.nickname == msg.value) {
 					return unicast(connection, {
@@ -168,7 +167,7 @@ export function onData(connection, data, final)
 		// Send back to requesting client
 		unicast(connection, {
 			type: 'client-list',
-			clients: map(values(connected_clients), cctx => cctx.data())
+			clients: map(connections(), cctx => cctx.data())
 		});
 		break;
 
@@ -195,9 +194,6 @@ export function onClose(connection, code, reason)
 {
 	// Obtain or client specific context data
 	let ctx = connection.data();
-
-	// Delete connection from connected client registry
-	delete connected_clients[connection];
 
 	// Notify remaining clients about the disconnect
 	broadcast({

@@ -44,6 +44,12 @@ typedef enum {
 	UWSD_ACTION_UNIX_PROXY,
 } uwsd_action_type_t;
 
+typedef enum {
+	UWSD_WS_MSG_FORMAT_RAW,
+	UWSD_WS_MSG_FORMAT_BUFFERED,
+	UWSD_WS_MSG_FORMAT_JSON,
+} uwsd_ws_msg_format_t;
+
 typedef struct uwsd_action {
 	struct list_head list;
 	uwsd_action_type_t type;
@@ -66,6 +72,8 @@ typedef struct uwsd_action {
 			struct sockaddr_un sun;
 			char *path;
 			char **env;
+			uwsd_ws_msg_format_t msg_format;
+			int msg_limit;
 		} script;
 		struct {
 			int connect_timeout, transfer_timeout, idle_timeout;

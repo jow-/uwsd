@@ -262,6 +262,10 @@ static const config_block_t run_script_spec = {
 	.properties = {
 		{ "environment", LIST,
 			offsetof(uwsd_action_t, data.script.env), { 0 } },
+		{ "ws-message-format", ENUM,
+			offsetof(uwsd_action_t, data.script.msg_format), VALUES("raw", "buffered", "json") },
+		{ "ws-message-limit", INTEGER ,
+			offsetof(uwsd_action_t, data.script.msg_limit), { 0 } },
 		{ 0 }
 	}
 };
@@ -1047,6 +1051,9 @@ validate_action(void *obj)
 		break;
 
 	case UWSD_ACTION_SCRIPT:
+		if (action->data.script.msg_limit < 0)
+			action->data.script.msg_limit = 0;
+
 		return uwsd_script_init(action, action->data.script.path);
 
 	case UWSD_ACTION_TCP_PROXY:
