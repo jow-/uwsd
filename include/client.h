@@ -59,7 +59,7 @@ typedef struct uwsd_client_context {
 		uint8_t *pos, *end, *sent;
 	} rxbuf;
 	struct {
-		uint8_t data[10 + 16384];
+		uint8_t data[16384];
 		uint8_t *pos, *end;
 	} txbuf;
 	uwsd_connection_state_t state;

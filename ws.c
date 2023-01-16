@@ -35,8 +35,6 @@
 
 #include "teeny-sha1.h"
 
-#define WS_TX_BUFFER_HEADROOM (sizeof(ws_frame_header_t) + sizeof(uint64_t))
-
 
 static const char *
 ws_state_name(uwsd_ws_state_t state)
@@ -682,8 +680,7 @@ uwsd_ws_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t s
 	struct iovec iov;
 	ssize_t rlen;
 
-	rlen = client_recv(&cl->upstream, cl->txbuf.data + WS_TX_BUFFER_HEADROOM,
-		sizeof(cl->txbuf.data) - WS_TX_BUFFER_HEADROOM);
+	rlen = client_recv(&cl->upstream, cl->txbuf.data, sizeof(cl->txbuf.data));
 
 	if (rlen == -1) {
 		if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
@@ -704,13 +701,13 @@ uwsd_ws_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t s
 	}
 
 	if (cl->action->type == UWSD_ACTION_SCRIPT) {
-		iov.iov_base = cl->txbuf.data + WS_TX_BUFFER_HEADROOM;
+		iov.iov_base = cl->txbuf.data;
 		iov.iov_len = rlen;
 
 		ws_downstream_tx_iov(cl, &iov, 1);
 	}
 	else {
-		cl->txbuf.pos = cl->txbuf.data + WS_TX_BUFFER_HEADROOM;
+		cl->txbuf.pos = cl->txbuf.data;
 		cl->txbuf.end = cl->txbuf.pos + rlen;
 
 		ws_downstream_tx(cl,
