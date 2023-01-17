@@ -693,20 +693,20 @@ uwsd_ws_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t s
 		return;
 	}
 
-	if (rlen == 0) {
-		uwsd_ws_connection_close(cl, STATUS_GOING_AWAY,
-			"Upstream closed connection");
-
-		return;
-	}
-
 	if (cl->action->type == UWSD_ACTION_SCRIPT) {
+		/* Assume that the worker already sent a close frame */
+		if (rlen == 0)
+			return client_free(cl, "Upstream closed connection");
+
 		iov.iov_base = cl->txbuf.data;
 		iov.iov_len = rlen;
 
 		ws_downstream_tx_iov(cl, &iov, 1);
 	}
 	else {
+		if (rlen == 0)
+			return uwsd_ws_connection_close(cl, STATUS_GOING_AWAY, "Upstream closed connection");
+
 		cl->txbuf.pos = cl->txbuf.data;
 		cl->txbuf.end = cl->txbuf.pos + rlen;
 
