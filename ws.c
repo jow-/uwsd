@@ -63,34 +63,6 @@ ws_state_transition(uwsd_client_context_t *cl, uwsd_ws_state_t state)
 	cl->ws.buflen = 0;
 }
 
-static void
-ws_add_txq(uwsd_client_context_t *cl, struct iovec *iov, size_t iolen)
-{
-	ws_txbuf_t *entry;
-	size_t i, total;
-	char *base;
-
-	for (i = 0, total = ALIGN(sizeof(ws_txbuf_t)); i < iolen; i++) {
-		total += ALIGN(sizeof(struct iovec));
-		total += ALIGN(iov[i].iov_len);
-	}
-
-	entry = xalloc(total);
-	base = (char *)entry + ALIGN(sizeof(*entry)) + ALIGN(sizeof(struct iovec)) * iolen;
-
-	for (i = 0; i < iolen; i++) {
-		entry->iov[i].iov_len = iov[i].iov_len;
-		entry->iov[i].iov_base = base;
-
-		memcpy(base, iov[i].iov_base, iov[i].iov_len);
-
-		base += ALIGN(iov[i].iov_len);
-	}
-
-	list_add_tail(&entry->list, &cl->ws.txq);
-	cl->ws.txqlen++;
-}
-
 static void __attribute__ ((format (printf, 3, 0)))
 ws_terminate(uwsd_client_context_t *cl, uint16_t rcode, const char *msg, ...)
 {
@@ -203,7 +175,7 @@ ws_downstream_rx(uwsd_client_context_t *cl)
 			cl->ws.buf.data[cl->ws.buflen++] = *off;
 
 			if (cl->ws.buflen == sizeof(ws_frame_header_t)) {
-				cl->ws.header = cl->ws.buf.header;
+				cl->ws.header = cl->ws.buf.frameheader.hdr;
 				cl->ws.len = cl->ws.header.len;
 
 				if (!cl->ws.header.mask) {
@@ -212,9 +184,9 @@ ws_downstream_rx(uwsd_client_context_t *cl)
 					return false;
 				}
 
-				if (cl->ws.buf.header.len == 126)
+				if (cl->ws.buf.frameheader.hdr.len == 126)
 					ws_state_transition(cl, STATE_WS_EXT_LEN16);
-				else if (cl->ws.buf.header.len == 127)
+				else if (cl->ws.buf.frameheader.hdr.len == 127)
 					ws_state_transition(cl, STATE_WS_EXT_LEN64);
 				else
 					ws_state_transition(cl, STATE_WS_MASK_KEY);
@@ -332,21 +304,24 @@ ws_downstream_tx_iov(uwsd_client_context_t *cl, struct iovec *iov, size_t iolen)
 {
 	errno = 0;
 
-	if (!list_empty(&cl->ws.txq) || !send_iov(&cl->downstream, iov, iolen)) {
+	if (!send_iov(&cl->downstream, iov, iolen)) {
 		if (errno) {
 			ws_terminate(cl, STATUS_TERMINATED, "Peer send error: %s", strerror(errno));
 		}
 		else {
-			if (!list_empty(&cl->ws.txq)) {
-				uwsd_ws_debug(cl, "TX in progress (qlen %zu), delaying send...", cl->ws.txqlen);
-			}
-			else {
-				uwsd_ws_debug(cl, "Partial TX, delaying sending remainder...");
-			}
-
-			ws_add_txq(cl, iov, iolen);
+			uwsd_ws_debug(cl, "Partial TX, delaying sending remainder...");
 			uwsd_state_transition(cl, STATE_CONN_WS_DOWNSTREAM_SEND);
 		}
+
+		return false;
+	}
+
+	/* we completely sent a close message, tear down connection */
+	if (iolen > 1 && iov[1].iov_base && cl->ws.buf.frameheader.hdr.opcode == OPCODE_CLOSE) {
+		if (cl->ws.error.code)
+			ws_terminate(cl, cl->ws.error.code, "%s", cl->ws.error.msg ? cl->ws.error.msg : "");
+		else
+			ws_terminate(cl, STATUS_CONNECTION_CLOSING, "Connection closing");
 
 		return false;
 	}
@@ -358,62 +333,39 @@ ws_downstream_tx_iov(uwsd_client_context_t *cl, struct iovec *iov, size_t iolen)
 static bool
 ws_downstream_tx(uwsd_client_context_t *cl, uwsd_ws_opcode_t opcode, bool add_header, const void *data, size_t len)
 {
-	struct iovec iov[2];
-	size_t iolen = 0;
-
-	struct __attribute__((packed)) {
-		ws_frame_header_t hdr;
-		union {
-			uint16_t u16;
-			uint64_t u64;
-		} extlen;
-	} hdrbuf = {
-		.hdr = {
-			.opcode = opcode,
-			.fin = true
-		}
-	};
+	memset(cl->ws.tx, 0, sizeof(cl->ws.tx));
 
 	if (add_header) {
-		iov[0].iov_base = &hdrbuf;
-		iolen++;
+		memset(&cl->ws.buf.frameheader, 0, sizeof(cl->ws.buf.frameheader));
+
+		cl->ws.buf.frameheader.hdr.opcode = opcode;
+		cl->ws.buf.frameheader.hdr.fin = true;
+
+		cl->ws.tx[0].iov_base = &cl->ws.buf.frameheader;
 
 		if (len > 0xffff) {
-			hdrbuf.hdr.len = 127;
-			hdrbuf.extlen.u64 = htobe64(len);
-			iov[0].iov_len = sizeof(ws_frame_header_t) + sizeof(uint64_t);
+			cl->ws.buf.frameheader.hdr.len = 127;
+			cl->ws.buf.frameheader.ext.len64 = htobe64(len);
+			cl->ws.tx[0].iov_len = sizeof(ws_frame_header_t) + sizeof(uint64_t);
 		}
 		else if (len > 0x7d) {
-			hdrbuf.hdr.len = 126;
-			hdrbuf.extlen.u16 = htobe16(len);
-			iov[0].iov_len = sizeof(ws_frame_header_t) + sizeof(uint16_t);
+			cl->ws.buf.frameheader.hdr.len = 126;
+			cl->ws.buf.frameheader.ext.len16 = htobe16(len);
+			cl->ws.tx[0].iov_len = sizeof(ws_frame_header_t) + sizeof(uint16_t);
 		}
 		else {
-			hdrbuf.hdr.len = len;
-			iov[0].iov_len = sizeof(ws_frame_header_t);
+			cl->ws.buf.frameheader.hdr.len = len;
+			cl->ws.tx[0].iov_len = sizeof(ws_frame_header_t);
 		}
 	}
 
-	iov[iolen].iov_base = (void *)data;
-	iov[iolen].iov_len = len;
-	iolen++;
+	cl->ws.tx[add_header].iov_base = (void *)data;
+	cl->ws.tx[add_header].iov_len = len;
 
 	errno = 0;
 
-	if (!ws_downstream_tx_iov(cl, iov, iolen))
+	if (!ws_downstream_tx_iov(cl, cl->ws.tx, ARRAY_SIZE(cl->ws.tx)))
 		return false;
-
-	/* we completely sent a close message, tear down connection */
-	if (opcode == OPCODE_CLOSE) {
-		if (cl->ws.error.code)
-			ws_terminate(cl,
-				cl->ws.error.code,
-				"%s", cl->ws.error.msg ? cl->ws.error.msg : "");
-		else
-			ws_terminate(cl, STATUS_CONNECTION_CLOSING, "Connection closing");
-
-		return false;
-	}
 
 	uwsd_state_transition(cl, STATE_CONN_WS_IDLE);
 
@@ -707,13 +659,9 @@ uwsd_ws_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t s
 		if (rlen == 0)
 			return uwsd_ws_connection_close(cl, STATUS_GOING_AWAY, "Upstream closed connection");
 
-		cl->txbuf.pos = cl->txbuf.data;
-		cl->txbuf.end = cl->txbuf.pos + rlen;
-
 		ws_downstream_tx(cl,
 			cl->action->data.proxy.binary ? OPCODE_BINARY : OPCODE_TEXT,
-			true,
-			cl->txbuf.pos, rlen);
+			true, cl->txbuf.data, rlen);
 	}
 }
 
@@ -726,34 +674,8 @@ uwsd_ws_state_upstream_timeout(uwsd_client_context_t *cl, uwsd_connection_state_
 __hidden void
 uwsd_ws_state_downstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
-	ws_frame_header_t *hdr;
-	ws_txbuf_t *entry;
-
-	while (!list_empty(&cl->ws.txq)) {
-		entry = list_first_entry(&cl->ws.txq, ws_txbuf_t, list);
-
-		if (!send_iov(&cl->downstream, entry->iov, entry->iolen)) {
-			if (errno)
-				ws_terminate(cl, STATUS_TERMINATED, "Peer send error: %s", strerror(errno));
-
-			return;
-		}
-
-		if (entry->iolen > 1) {
-			hdr = (ws_frame_header_t *)((char *)entry + ALIGN(sizeof(entry)) + ALIGN(sizeof(struct iovec)) * entry->iolen);
-
-			if (hdr->opcode == OPCODE_CLOSE) {
-				ws_terminate(cl, STATUS_CONNECTION_CLOSING, "Server initiated close");
-
-				return;
-			}
-		}
-
-		list_del(&entry->list);
-		free(entry);
-
-		cl->ws.txqlen--;
-	}
+	if (!ws_downstream_tx_iov(cl, cl->ws.tx, ARRAY_SIZE(cl->ws.tx)))
+		return; /* partial write, connection closure or error */
 
 	//ws_state_transition(cl, STATE_WS_HEADER);
 	uwsd_state_transition(cl, STATE_CONN_WS_IDLE);
@@ -786,37 +708,29 @@ uwsd_ws_reply_send(uwsd_client_context_t *cl, uwsd_ws_opcode_t opcode, const voi
 __hidden void
 uwsd_ws_connection_close(uwsd_client_context_t *cl, uint16_t code, const char *message, ...)
 {
-	struct __attribute__((packed)) { uint16_t code; char msg[123]; } buf;
-	ws_frame_header_t hdr = { .opcode = OPCODE_CLOSE, .fin = true };
-	struct iovec iov[2];
-	char *msg, *nl;
+	struct __attribute__((packed)) { uint16_t code; char msg[123]; } *buf;
 	va_list ap;
+	char *nl;
+	int len;
+
+	cl->ws.error.code = code;
+	free(cl->ws.error.msg);
 
 	va_start(ap, message);
-	hdr.len = size_t_min(xvasprintf(&msg, message, ap), sizeof(buf.msg));
+	len = xvasprintf(&cl->ws.error.msg, message, ap);
 	va_end(ap);
 
-	memcpy(buf.msg, msg, hdr.len);
+	if (len > 125)
+		len = 125;
 
-	if ((nl = memchr(buf.msg, '\n', hdr.len)) != NULL) {
-		*nl = 0;
-		hdr.len = nl - buf.msg;
-	}
+	if ((nl = memchr(cl->ws.error.msg, '\n', len)) != NULL)
+		len = nl - cl->ws.error.msg;
 
-	hdr.len += sizeof(buf.code);
-	buf.code = htobe16(code);
+	buf = (void *)cl->ws.buf.frameheader.ext.data;
+	buf->code = htobe16(code);
+	memcpy(buf->msg, cl->ws.error.msg, len);
 
-	iov[0].iov_base = &hdr;
-	iov[0].iov_len = sizeof(hdr);
-
-	iov[1].iov_base = &buf;
-	iov[1].iov_len = hdr.len;
-
-	send_iov(&cl->downstream, iov, 2);
-
-	ws_terminate(cl, code, "%s", msg);
-
-	free(msg);
+	ws_downstream_tx(cl, OPCODE_CLOSE, true, buf, len + sizeof(uint16_t));
 }
 
 __hidden void

@@ -56,8 +56,6 @@ client_create(int fd, uwsd_listen_t *listen, struct sockaddr *peeraddr, size_t a
 
 	memcpy(&cl->sa_peer.unspec, peeraddr, alen);
 
-	INIT_LIST_HEAD(&cl->ws.txq);
-
 	list_add_tail(&cl->list, &clients);
 
 	uwsd_log_debug(cl, "connected");
@@ -74,8 +72,6 @@ client_create(int fd, uwsd_listen_t *listen, struct sockaddr *peeraddr, size_t a
 __hidden void
 client_free(uwsd_client_context_t *cl, const char *reason, ...)
 {
-	ws_txbuf_t *e, *tmp;
-
 #ifndef NDEBUG
 	char *msg = NULL;
 	va_list ap;
@@ -108,9 +104,6 @@ client_free(uwsd_client_context_t *cl, const char *reason, ...)
 
 	if (cl->downstream.ufd.fd != -1)
 		close(cl->downstream.ufd.fd);
-
-	list_for_each_entry_safe(e, tmp, &cl->ws.txq, list)
-		free(e);
 
 	while (cl->http_num_headers > 0)
 		free(cl->http_headers[--cl->http_num_headers].name);

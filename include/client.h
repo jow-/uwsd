@@ -78,7 +78,14 @@ typedef struct uwsd_client_context {
 	struct {
 		uwsd_ws_state_t state;
 		union {
-			ws_frame_header_t header;
+			struct {
+				ws_frame_header_t hdr;
+				union {
+					uint16_t len16;
+					uint64_t len64;
+					char data[125];
+				} ext;
+			} frameheader;
 			uint16_t u16;
 			uint64_t u64;
 			uint8_t mask[4];
@@ -92,8 +99,7 @@ typedef struct uwsd_client_context {
 		ws_frame_header_t header;
 		uint64_t len;
 		uint8_t mask[4];
-		struct list_head txq;
-		size_t txqlen;
+		struct iovec tx[2];
 	} ws;
 } uwsd_client_context_t;
 
