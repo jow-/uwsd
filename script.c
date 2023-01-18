@@ -743,15 +743,43 @@ uc_script_send(uc_vm_t *vm, size_t nargs)
 {
 	script_connection_t **conn = uc_fn_this("uwsd.connection");
 	uc_value_t *data = uc_fn_arg(0);
+	ssize_t n, wlen;
+	char *p;
 
-	if (!conn || !*conn || (*conn)->proto != UWSD_PROTOCOL_WS || (*conn)->state != STATE_WS)
+	if (!conn || !*conn)
 		return NULL;
 
 	if (ucv_type(data) != UC_STRING)
 		return NULL;
 
-	return ucv_boolean_new(ws_frame_send(*conn, OPCODE_TEXT,
-		ucv_string_get(data), ucv_string_length(data)));
+	p = ucv_string_get(data);
+	n = ucv_string_length(data);
+
+	if ((*conn)->proto == UWSD_PROTOCOL_WS) {
+		if ((*conn)->state != STATE_WS)
+			return NULL;
+
+		if (!ws_frame_send(*conn, OPCODE_TEXT, p, n))
+			return ucv_boolean_new(false);
+	}
+	else {
+		while (n) {
+			wlen = write((*conn)->ufd.fd, p, ssize_t_min(n, 16384));
+
+			if (wlen == -1) {
+				if (errno == EINTR)
+					continue;
+
+				uc_vm_raise_exception(vm, EXCEPTION_RUNTIME, "write error: %m");
+				break;
+			}
+
+			p += wlen;
+			n -= wlen;
+		}
+	}
+
+	return ucv_boolean_new(true);
 }
 
 static uc_value_t *
@@ -930,7 +958,7 @@ uc_script_reply(uc_vm_t *vm, size_t nargs)
 			if (errno == EINTR)
 				continue;
 
-			uc_vm_raise_exception(vm, EXCEPTION_RUNTIME, "write error: %s", strerror(errno));
+			uc_vm_raise_exception(vm, EXCEPTION_RUNTIME, "write error: %m");
 			break;
 		}
 
