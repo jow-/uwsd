@@ -106,14 +106,14 @@ static const uwsd_state_entry_t states[] = {
 		.channels   = CHANNEL_DOWNSTREAM,
 		.events     = EVENT_WRITABLE,
 		.io_cb      = uwsd_http_state_downstream_send,
-		.timeout    = TIMEOUT_UPSTREAM_TRANSFER,
+		.timeout    = TIMEOUT_DOWNSTREAM_TRANSFER,
 		.timeout_cb = uwsd_http_state_downstream_timeout
 	},
 	[STATE_CONN_DOWNSTREAM_RECV] = {
 		.channels   = CHANNEL_DOWNSTREAM,
 		.events     = EVENT_READABLE,
 		.io_cb      = uwsd_http_state_downstream_recv,
-		.timeout    = TIMEOUT_UPSTREAM_TRANSFER,
+		.timeout    = TIMEOUT_DOWNSTREAM_TRANSFER,
 		.timeout_cb = uwsd_http_state_downstream_timeout
 	},
 
@@ -232,7 +232,12 @@ timeout_value(uwsd_client_context_t *cl, uwsd_timeout_kind_t tt)
 	case TIMEOUT_DOWNSTREAM_IDLE:     return cl->listener->idle_timeout;
 
 	case TIMEOUT_UPSTREAM_CONNECT:    return proxy ? cl->action->data.proxy.connect_timeout  : -1;
-	case TIMEOUT_UPSTREAM_TRANSFER:   return proxy ? cl->action->data.proxy.transfer_timeout : -1;
+
+	case TIMEOUT_UPSTREAM_TRANSFER:
+		if (proxy && cl->action->data.proxy.transfer_timeout < cl->listener->transfer_timeout)
+			return cl->action->data.proxy.transfer_timeout;
+
+		return cl->listener->transfer_timeout;
 
 	case TIMEOUT_XSTREAM_IDLE:
 		if (proxy && cl->action->data.proxy.idle_timeout < cl->listener->idle_timeout)
