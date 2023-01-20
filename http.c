@@ -1599,7 +1599,10 @@ uwsd_http_state_response_sendfile(uwsd_client_context_t *cl, uwsd_connection_sta
 __hidden void
 uwsd_http_state_upstream_timeout(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
-	http_error(cl, 504, "Gateway Timeout", "Timeout while connecting to upstream server");
+	if (cl->http.state <= STATE_HTTP_STATUS_VERSION)
+		http_error(cl, 504, "Gateway Timeout", "Timeout while connecting to upstream server");
+	else
+		client_free(cl, "Timeout while reading upstream response");
 }
 
 __hidden void
