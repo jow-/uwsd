@@ -1,0 +1,33 @@
+<!--
+	Example wrapper script to emulate a CGI gateway under uwsd.
+
+	In order to test this application, ensure that the uwsd server is running
+	with the shipped example configuration by invoking
+
+		./uwsd --config example/cgi.conf
+
+	Once the uwsd server is started, navigate to <http://127.0.0.1:8080/> in
+	your browser to view the application.
+-->
+
+<html>
+	<head>
+		<title>uwsd CGI</title>
+	</head>
+	<body onload="initChat()">
+		<h2>CGI script demonstration for uwsd</h2>
+		<p>
+			This page simply serves as index since /cgi-bin/ directory
+			contents may not be enumerated.
+		</p>
+		<p>
+			Example CGI scripts:
+
+			<ul>
+				<li><a href="/cgi-bin/env.cgi">Dump environment</a></li>
+				<li><a href="/cgi-bin/time.cgi">Show system time</a></li>
+				<li><a href="/cgi-bin/hello.pl">Perl hello world</a></li>
+			</ul>
+		</p>
+	</body>
+</html>
