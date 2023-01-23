@@ -139,6 +139,19 @@ ucv_clear(uc_value_t **uv)
 	*uv = NULL;
 }
 
+static bool
+set_cloexec(int fd)
+{
+	int flags;
+
+	flags = fcntl(fd, F_GETFD);
+
+	if (flags == -1)
+		return false;
+
+	return (fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == 0);
+}
+
 static int
 server_socket_setup(const char *sockpath)
 {
@@ -153,6 +166,9 @@ server_socket_setup(const char *sockpath)
 
 		return -1;
 	}
+
+	if (!set_cloexec(sock))
+		uwsd_log_warn(NULL, "Failed to apply FD_CLOEXEC to descriptor: %m");
 
 	if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) == -1)
 		uwsd_log_warn(NULL, "Unable to set SO_REUSEADDR: %m");
@@ -1343,6 +1359,9 @@ handle_client(struct uloop_fd *ufd, unsigned int events)
 
 		return;
 	}
+
+	if (!set_cloexec(fd))
+		fprintf(stderr, "Failed to apply FD_CLOEXEC to descriptor: %m\n");
 
 	conn = xalloc(sizeof(*conn));
 	conn->ctx = ctx;
