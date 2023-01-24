@@ -2062,7 +2062,7 @@ uwsd_script_free(uwsd_action_t *action)
 	uloop_timeout_cancel(&action->data.script.timeout);
 	uloop_process_delete(&action->data.script.proc);
 
-	kill(action->data.script.proc.pid, SIGTERM);
+	kill(action->data.script.proc.pid, SIGKILL);
 	waitpid(action->data.script.proc.pid, NULL, 0);
 
 	free(action->data.script.path);

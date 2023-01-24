@@ -20,6 +20,8 @@
 #include <string.h>
 #include <limits.h>
 #include <ctype.h>
+#include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 
 #include "config.h"
@@ -790,7 +792,7 @@ config_parse_block(const char **input, const config_block_t *spec, void *base)
 }
 
 static void
-print_error_pos(const char *input, const char *off)
+print_error_pos(const char *path, const char *input, const char *off)
 {
 	size_t line, byte;
 	const char *p;
@@ -803,7 +805,7 @@ print_error_pos(const char *input, const char *off)
 		}
 	}
 
-	uwsd_log_err(NULL, "In line %zu, byte %zu.", line, byte);
+	uwsd_log_err(NULL, "In %s, line %zu, byte %zu.", path, line, byte);
 	uwsd_log_err(NULL, "Near here:");
 	uwsd_log_err(NULL, "  `%.*s`", (int)strcspn(input, "\n"), input);
 }
@@ -1281,40 +1283,31 @@ free_ssl(void *obj)
 }
 
 
-__hidden bool
-uwsd_config_parse(const char *file)
+static bool
+parse_file(int dir, const char *file, struct stat *st)
 {
 	const char *off;
-	struct stat s;
 	char *input;
-	FILE *fp;
+	int fd;
 
-	if (stat(file, &s)) {
-		sys_perror("Unable to stat() configuration file '%s'", file);
+	fd = openat(dir, file, O_RDONLY);
 
-		return false;
-	}
-
-	fp = fopen(file, "r");
-
-	if (!fp) {
+	if (fd == -1) {
 		sys_perror("Unable to open configuration file '%s'", file);
 
 		return false;
 	}
 
-	input = xalloc(s.st_size + 1);
+	input = xalloc(st->st_size + 1);
 
-	fread(input, 1, s.st_size, fp);
-	fclose(fp);
+	read(fd, input, st->st_size);
+	close(fd);
 
 	off = (const char *)input;
-	config = config_alloc_object(&toplevel_spec, NULL);
 
 	do {
 		if (!config_parse_property(&off, &toplevel_spec, config)) {
-			config_free_object(&toplevel_spec, config);
-			print_error_pos(input, off);
+			print_error_pos(file, input, off);
 			free(input);
 
 			return false;
@@ -1324,4 +1317,71 @@ uwsd_config_parse(const char *file)
 	free(input);
 
 	return true;
+}
+
+static int
+filter_file(const struct dirent *e)
+{
+	char *s = strchr(e->d_name, '.');
+
+	return (strcmp(e->d_name, ".") && strcmp(e->d_name, "..") && s && !strcmp(s, ".conf"));
+}
+
+__hidden bool
+uwsd_config_parse(const char *path)
+{
+	struct dirent **files;
+	struct stat st;
+	int nfiles, fd;
+
+	if (stat(path, &st) == -1) {
+		sys_perror("Unable to stat() '%s'", path);
+
+		return false;
+	}
+
+	config = config_alloc_object(&toplevel_spec, NULL);
+
+	if (S_ISDIR(st.st_mode)) {
+		fd = open(path, O_RDONLY);
+
+		if (fd == -1) {
+			sys_perror("Unable to open() '%s'", path);
+
+			return false;
+		}
+
+		nfiles = scandir(path, &files, filter_file, alphasort);
+
+		if (nfiles == -1) {
+			sys_perror("Unable to scandir() '%s'", path);
+			close(fd);
+
+			return false;
+		}
+
+		for (; nfiles; files++, nfiles--) {
+			if (fstatat(fd, files[0]->d_name, &st, 0) == -1) {
+				sys_perror("Unable to stat() '%s'", files[0]->d_name);
+
+				continue;
+			}
+
+			if (!parse_file(fd, files[0]->d_name, &st))
+				goto error;
+		}
+
+		close(fd);
+	}
+	else {
+		if (!parse_file(AT_FDCWD, path, &st))
+			goto error;
+	}
+
+	return true;
+
+error:
+	config_free_object(&toplevel_spec, config);
+
+	return false;
 }
