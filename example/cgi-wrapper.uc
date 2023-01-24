@@ -65,29 +65,6 @@ function lookup_script(request) {
 	return null;
 }
 
-function mkfifo() {
-	const id = fs.basename(getenv('UWSD_WORKER_SOCKET'));
-	assert(id, "Unable to derive FIFO name");
-
-	const path = `/tmp/uwsd-cgi-${id}`;
-	assert(system(`mkfifo '${path}'`) == 0, 'Unable to create CGI FIFO');
-
-	return path;
-}
-
-function build_cmdline(env, path, fifo) {
-	let cmd = [];
-
-	for (let k, v in env)
-		if (v != null)
-			push(cmd, `${k}='${replace(v, "'", "'\\''")}'`);
-
-	push(cmd, `exec '${replace(path, "'", "'\\''")}'`);
-	push(cmd, `<${fifo}`);
-
-	return join(' ', cmd);
-}
-
 // This callback is invoked when the header portion of an HTTP request
 // is received. Depending on the type of request, the client might
 // follow up with subsequent request body data, which is handled by
@@ -166,41 +143,11 @@ export function onRequest(request, method, uri)
 	for (let hdrname, hdrvalue in request.header())
 		cgi_env[`HTTP_${uc(replace(hdrname, /\W+/g, '_'))}`] = hdrvalue;
 
-	// Create a pipe for feeding process stdin
-	let fifo_path = mkfifo();
-
 	// Spawn script process
-	let proc_stdout = fs.popen(build_cmdline(cgi_env, script.path, fifo_path), "r");
+	let proc = spawn(script.path, [ script.path ], cgi_env);
 
-	if (!proc_stdout) {
-		fs.unlink(fifo_path);
-
-		return request.reply({
-			'Status': '500 Internal Server Error',
-			'Content-Type': 'text/plain'
-		}, `Unable to spawn CGI script: ${fs.error()}`);
-	}
-
-	// Open write end of fifo
-	let fifo_stdin = fs.open(fifo_path, 'w');
-
-	// Delete fifo file
-	fs.unlink(fifo_path);
-
-	if (!fifo_stdin) {
-		proc_stdout.close();
-
-		return request.reply({
-			'Status': '500 Internal Server Error',
-			'Content-Type': 'text/plain'
-		}, `Unable to fs.open FIFO: ${fs.error()}`);
-	}
-
-	// Store process stdio handles in the request context
-	request.data({
-		stdin: fifo_stdin,
-		stdout: proc_stdout
-	});
+	// Store process handle in the request context
+	request.data(proc);
 };
 
 // The `onBody()` callback is invoked when a chunk of the HTTP request
@@ -224,102 +171,26 @@ export function onRequest(request, method, uri)
 // `connection.reply([headers[, body]])` here.
 export function onBody(request, data)
 {
-	// Get back process stdio handles from request context
-	let io = request.data();
+	// Get back process handle from request context
+	let proc = request.data();
 
-	if (!io)
+	if (!proc)
 		return;
 
 	// On input data, send it to the process stdin pipe and return
 	if (length(data)) {
-		io.stdin.write(data);
+		proc.stdin().write(data);
 
 		return;
 	}
 
 	// On EOF, close process stdin and begin processing output
-	io.stdin.close();
+	proc.stdin().close();
 
-	// Handle script output
-	let headers = {}, code = 200, status = 'OK', chunked = true;
+	// Forward script output
+	for (let chunk = proc.stdout().read(4096); length(chunk); chunk = proc.stdout().read(4096))
+		request.send(chunk);
 
-	while (true) {
-		if (headers) {
-			let hline = io.stdout.read('line');
-
-			if (hline == null) {
-				return request.reply({
-					'Status': '502 Bad Gateway',
-					'Content-Type': 'text/plain'
-				}, 'The invoked CGI script did not produce any response');
-			}
-
-			if (hline == '\r\n' || hline == '\n') {
-				request.send(`HTTP/${sprintf('%3.1f', request.version())} ${code} ${status}\r\n`);
-
-				for (let hdrname, hdrvalue in headers) {
-					if (lc(hdrname) in [ 'content-length', 'transfer-encoding' ])
-						chunked = false;
-
-					if (length(hdrvalue))
-						request.send(`${hdrname}: ${hdrvalue}\r\n`);
-				}
-
-				if (chunked)
-					request.send(`Transfer-Encoding: chunked\r\n`);
-
-				request.send('\r\n');
-				headers = null;
-			}
-			else {
-				let m = match(hline, /^([^][:space:]()<>@,;:\\"/[?={}]+)[[:space:]]*:(.+)\n$/);
-
-				if (!m) {
-					io.stdout.close();
-
-					return request.reply({
-						'Status': '502 Bad Gateway',
-						'Content-Type': 'text/plain'
-					}, 'The invoked CGI script did output an invalid header line');
-				}
-
-				if (lc(m[1]) == 'status') {
-					m = match(trim(m[2]), /^(\d{3})\s+(.+)$/);
-
-					if (!m) {
-						io.stdout.close();
-
-						return request.reply({
-							'Status': '502 Bad Gateway',
-							'Content-Type': 'text/plain'
-						}, 'The invoked CGI script did not output a valid status hline');
-					}
-
-					code = +m[1];
-					status = m[2];
-				}
-				else {
-					headers[m[1]] = trim(m[2]);
-				}
-			}
-
-		}
-		else {
-			let data = io.stdout.read(4096);
-
-			if (chunked) {
-				request.send(sprintf('%x\r\n', length(data)));
-				request.send(data ?? '');
-				request.send('\r\n');
-			}
-			else {
-				request.send(data ?? '');
-			}
-
-			if (!length(data)) {
-				io.stdout.close();
-				return;
-			}
-		}
-	}
+	// Terminate program
+	proc.close();
 };

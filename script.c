@@ -1055,9 +1055,332 @@ uc_script_sha1digest(uc_vm_t *vm, size_t nargs)
 	return ucv_string_new(digest);
 }
 
+static uc_resource_type_t *
+uc_script_acquire_file_resource(uc_vm_t *vm)
+{
+	uc_resource_type_t *restype;
+	uc_cfn_ptr_t requirefn;
+
+	restype = ucv_resource_type_lookup(vm, "fs.file");
+
+	if (!restype) {
+		requirefn = uc_stdlib_function("require");
+
+		uc_vm_stack_push(vm, ucv_string_new("fs"));
+		ucv_put(requirefn(vm, 1));
+
+		restype = ucv_resource_type_lookup(vm, "fs.file");
+	}
+
+	return restype;
+}
+
+typedef struct {
+	uc_value_t *ifp, *ofp;
+	pid_t pid;
+} script_spawn_t;
+
+static uc_value_t *
+uc_script_spawn_stdin(uc_vm_t *vm, size_t nargs)
+{
+	script_spawn_t **spawn = uc_fn_this("uwsd.spawn");
+
+	return ucv_get((*spawn)->ifp);
+}
+
+static uc_value_t *
+uc_script_spawn_stdout(uc_vm_t *vm, size_t nargs)
+{
+	script_spawn_t **spawn = uc_fn_this("uwsd.spawn");
+
+	return ucv_get((*spawn)->ofp);
+}
+
+static void
+xclose(int fd)
+{
+	if (fd > 2)
+		close(fd);
+}
+
+static void
+close_spawn(void *ud);
+
+static uc_value_t *
+uc_script_spawn_close(uc_vm_t *vm, size_t nargs)
+{
+	script_spawn_t **spawn = uc_fn_this("uwsd.spawn");
+	pid_t pid;
+	int rc;
+
+	if (!spawn || !*spawn)
+		return NULL;
+
+	pid = (*spawn)->pid;
+	(*spawn)->pid = -1;
+
+	close_spawn(*spawn);
+
+	*spawn = NULL;
+
+	if (waitpid(pid, &rc, 0) == -1) {
+		uc_vm_raise_exception(vm, EXCEPTION_RUNTIME, "Unable to waitpid: %m");
+
+		return NULL;
+	}
+
+	if (WIFEXITED(rc))
+		return ucv_int64_new(WEXITSTATUS(rc));
+
+	if (WIFSIGNALED(rc))
+		return ucv_int64_new(-WTERMSIG(rc));
+
+	return ucv_int64_new(0);
+}
+
+static void
+close_spawn(void *ud)
+{
+	script_spawn_t *spawn = ud;
+	FILE **ifp, **ofp;
+
+	if (!spawn)
+		return;
+
+	ifp = (FILE **)ucv_resource_dataptr(spawn->ifp, "fs.file");
+	ofp = (FILE **)ucv_resource_dataptr(spawn->ofp, "fs.file");
+
+	if (ifp && *ifp) {
+		fclose(*ifp);
+		*ifp = NULL;
+	}
+
+	if (ofp && *ofp) {
+		fclose(*ofp);
+		*ofp = NULL;
+	}
+
+	if (spawn->pid != -1)
+		waitpid(spawn->pid, NULL, 0);
+
+	free(spawn);
+}
+
+static const uc_function_list_t spawn_fns[] = {
+	{ "stdin",	uc_script_spawn_stdin },
+	{ "stdout",	uc_script_spawn_stdout },
+	{ "close",	uc_script_spawn_close },
+};
+
+static void __attribute__((noreturn))
+uc_script_spawn_command(uc_vm_t *vm, uc_value_t *cmd, uc_value_t *arg, uc_value_t *env)
+{
+	char *envp[ucv_object_length(env) + 2];
+	char *argv[ucv_array_length(arg) + 1];
+	uc_stringbuf_t *buf;
+	uc_value_t *e;
+	size_t i = 0;
+
+	xasprintf(&envp[i++], "PATH=%s", getenv("PATH") ?: "");
+
+	ucv_object_foreach(env, k, v) {
+		if (v) {
+			buf = xprintbuf_new();
+
+			sprintbuf(buf, "%s=", k);
+			ucv_to_stringbuf(vm, buf, v, false);
+
+			envp[i++] = buf->buf;
+
+			free(buf);
+		}
+	}
+
+	envp[i] = NULL;
+
+	switch (ucv_type(cmd)) {
+	case UC_STRING:
+		for (i = 0; i < ucv_array_length(arg); i++) {
+			e = ucv_array_get(arg, i);
+
+			if (ucv_type(e) == UC_STRING)
+				argv[i] = ucv_string_get(e);
+			else
+				argv[i] = ucv_to_string(vm, e);
+		}
+
+		argv[i] = NULL;
+
+		execvpe(ucv_string_get(cmd), argv, envp);
+		exit(-1);
+
+		break;
+
+	case UC_CLOSURE:
+	case UC_CFUNCTION:
+		clearenv();
+
+		for (i = 0; envp[i]; i++)
+			putenv(envp[i]);
+
+		uc_vm_stack_push(vm, cmd);
+
+		for (i = 0; i < ucv_array_length(arg); i++)
+			uc_vm_stack_push(vm, ucv_array_get(arg, i));
+
+		switch (uc_vm_call(vm, false, i)) {
+		case EXCEPTION_NONE:
+			exit(ucv_int64_get(uc_vm_stack_pop(vm)));
+			break;
+
+		case EXCEPTION_EXIT:
+			exit(vm->arg.s32);
+			break;
+
+		default:
+			exit(-1);
+			break;
+		}
+
+		break;
+
+	default:
+		exit(-1);
+		break;
+	}
+}
+
+static uc_value_t *
+uc_script_spawn(uc_vm_t *vm, size_t nargs)
+{
+	uc_resource_type_t *filetype = uc_script_acquire_file_resource(vm);
+	script_context_t *ctx = container_of(vm, script_context_t, vm);
+	script_connection_t *conn, *tmp;
+	uc_value_t *cmd = uc_fn_arg(0);
+	uc_value_t *arg = uc_fn_arg(1);
+	uc_value_t *env = uc_fn_arg(2);
+	script_spawn_t *spawn;
+	int pfds[2][2];
+	pid_t pid;
+	FILE *fp;
+
+	if (!filetype)
+		return NULL;
+
+	if (!ucv_is_callable(cmd) && ucv_type(cmd) != UC_STRING) {
+		uc_vm_raise_exception(vm, EXCEPTION_RUNTIME, "Command value is neither function nor string");
+
+		return NULL;
+	}
+
+	if (arg && ucv_type(arg) != UC_ARRAY) {
+		uc_vm_raise_exception(vm, EXCEPTION_RUNTIME, "Argument vector is not an array");
+
+		return NULL;
+	}
+
+	if (env && ucv_type(env) != UC_OBJECT) {
+		uc_vm_raise_exception(vm, EXCEPTION_RUNTIME, "Environment value is not an object");
+
+		return NULL;
+	}
+
+	if (pipe(pfds[0]) == -1) {
+		uc_vm_raise_exception(vm, EXCEPTION_RUNTIME, "Unable to spawn pipe: %m");
+
+		return NULL;
+	}
+
+	if (pipe(pfds[1]) == -1) {
+		uc_vm_raise_exception(vm, EXCEPTION_RUNTIME, "Unable to spawn pipe: %m");
+
+		xclose(pfds[0][0]);
+		xclose(pfds[0][1]);
+
+		return NULL;
+	}
+
+	pid = fork();
+
+	switch (pid) {
+	case -1:
+		uc_vm_raise_exception(vm, EXCEPTION_RUNTIME, "Unable to fork: %m");
+
+		xclose(pfds[0][0]);
+		xclose(pfds[0][1]);
+		xclose(pfds[1][0]);
+		xclose(pfds[1][1]);
+
+		return NULL;
+
+	case 0:
+		dup2(pfds[0][0], 0);
+		dup2(pfds[1][1], 1);
+
+		xclose(pfds[0][0]);
+		xclose(pfds[0][1]);
+		xclose(pfds[1][0]);
+		xclose(pfds[1][1]);
+
+		uloop_done();
+
+		list_for_each_entry_safe(conn, tmp, &requests, list) {
+			list_del(&conn->list);
+			close(conn->ufd.fd);
+		}
+
+		close(ctx->ufd.fd);
+
+		uc_script_spawn_command(vm, cmd, arg, env);
+		break;
+
+	default:
+		xclose(pfds[0][0]);
+		xclose(pfds[1][1]);
+
+		spawn = xalloc(sizeof(*spawn));
+		spawn->pid = pid;
+
+		/* setup stdin descriptor */
+		fp = fdopen(pfds[0][1], "w");
+
+		if (!fp) {
+			uc_vm_raise_exception(vm, EXCEPTION_RUNTIME, "Unable to fdopen(): %m");
+
+			xclose(pfds[0][1]);
+			xclose(pfds[1][0]);
+
+			free(spawn);
+
+			return NULL;
+		}
+
+		spawn->ifp = uc_resource_new(filetype, fp);
+
+		/* setup stdout descriptor */
+		fp = fdopen(pfds[1][0], "r");
+
+		if (!fp) {
+			uc_vm_raise_exception(vm, EXCEPTION_RUNTIME, "Unable to fdopen(): %m");
+
+			xclose(pfds[1][0]);
+
+			ucv_put(spawn->ifp);
+			free(spawn);
+
+			return NULL;
+		}
+
+		spawn->ofp = uc_resource_new(filetype, fp);
+
+		return uc_resource_new(ucv_resource_type_lookup(vm, "uwsd.spawn"), spawn);
+	}
+}
+
 static const uc_function_list_t global_fns[] = {
 	{ "connections", uc_script_connections },
-	{ "sha1digest",  uc_script_sha1digest }
+	{ "sha1digest",  uc_script_sha1digest },
+	{ "spawn",       uc_script_spawn },
 };
 
 
@@ -1209,7 +1532,7 @@ handle_tlv(script_connection_t *conn, uint16_t type, uint16_t len, uint8_t *data
 		nlen = strlen((char *)data) + 1;
 
 		ucv_object_add(conn->hdr, (char *)data,
-			ucv_string_new_length((char *)data + nlen, len - nlen));
+			ucv_string_new_length((char *)data + nlen, len - nlen - 1));
 
 		break;
 
@@ -1462,6 +1785,7 @@ script_context_run(const char *sockpath, const char *scriptpath)
 	switch (rc) {
 	case STATUS_OK:
 		uc_type_declare(&ctx.vm, "uwsd.connection", conn_fns, close_conn);
+		uc_type_declare(&ctx.vm, "uwsd.spawn", spawn_fns, close_spawn);
 
 		ctx.onConnect = ucv_get(ucv_array_get(result, 0));
 		ctx.onData    = ucv_get(ucv_array_get(result, 1));
@@ -1492,13 +1816,6 @@ script_context_run(const char *sockpath, const char *scriptpath)
 	uloop_run();
 
 	return 0;
-}
-
-static void
-xclose(int fd)
-{
-	if (fd > 2)
-		close(fd);
 }
 
 static bool
