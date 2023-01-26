@@ -55,7 +55,7 @@ ELSE()
 	ENDIF()
 ENDIF()
 
-SET(UWSD_SOURCES main.c teeny-sha1.c util.c listen.c http.c client.c ws.c file.c state.c script.c config.c auth.c log.c ${UWSD_SSL_SOURCES})
+SET(UWSD_SOURCES main.c teeny-sha1.c util.c listen.c http.c client.c ws.c file.c state.c script.c config.c auth.c log.c io.c ${UWSD_SSL_SOURCES})
 ADD_EXECUTABLE(uwsd ${UWSD_SOURCES})
 
 FIND_LIBRARY(ubox NAMES ubox)

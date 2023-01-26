@@ -83,12 +83,6 @@ typedef struct __attribute__((packed)) {
 	uint8_t mask:1;
 } ws_frame_header_t;
 
-typedef struct ws_txbuf {
-	struct list_head list;
-	size_t iolen;
-	struct iovec iov[];
-} ws_txbuf_t;
-
 typedef struct uwsd_client_context uwsd_client_context_t;
 
 __hidden bool uwsd_ws_reply_send(uwsd_client_context_t *, uwsd_ws_opcode_t, const void *, size_t);

@@ -361,10 +361,12 @@ uwsd_file_directory_list(uwsd_client_context_t *cl, const char *physpath, const 
 	uwsd_http_reply(cl, 200, "OK", UWSD_HTTP_REPLY_EMPTY,
 		"Content-Type", type ? type : "text/html; charset=utf-8",
 		"Content-Length", szbuf,
-		"Connection", uwsd_http_header_contains(cl, "Connection", "close") ? "close" : NULL,
+		"Connection", (cl->http.request_flags & HTTP_WANT_CLOSE) ? "close" : NULL,
 		UWSD_HTTP_REPLY_EOH);
 
-	uwsd_state_transition(cl, STATE_CONN_REPLY_SENDFILE);
+	cl->http.response_flags |= HTTP_SEND_FILE;
+
+	uwsd_state_transition(cl, STATE_CONN_RESPONSE);
 
 	return true;
 }

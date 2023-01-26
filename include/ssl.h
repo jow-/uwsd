@@ -48,7 +48,6 @@ __hidden bool uwsd_ssl_accept(uwsd_client_context_t *);
 
 __hidden ssize_t uwsd_ssl_pending(uwsd_connection_t *);
 __hidden ssize_t uwsd_ssl_recv(uwsd_connection_t *, void *, size_t);
-__hidden ssize_t uwsd_ssl_send(uwsd_connection_t *, const void *, size_t);
 __hidden ssize_t uwsd_ssl_sendv(uwsd_connection_t *, struct iovec *, size_t);
 __hidden ssize_t uwsd_ssl_close(uwsd_connection_t *);
 

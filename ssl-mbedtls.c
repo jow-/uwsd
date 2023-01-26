@@ -764,36 +764,6 @@ uwsd_ssl_recv(uwsd_connection_t *conn, void *data, size_t len)
 }
 
 __hidden ssize_t
-uwsd_ssl_send(uwsd_connection_t *conn, const void *data, size_t len)
-{
-	mbedtls_ssl_context *ssl = conn->ssl;
-	int err;
-
-	errno = 0;
-
-	if (len == 0)
-		return 0;
-
-	err = mbedtls_ssl_write(ssl, data, len);
-
-	if (err >= 0)
-		return err;
-
-	switch (err) {
-	case MBEDTLS_ERR_SSL_WANT_READ:
-	case MBEDTLS_ERR_SSL_WANT_WRITE:
-		errno = EAGAIN;
-
-		return -1;
-
-	default:
-		errno = EINVAL;
-
-		return -1;
-	}
-}
-
-__hidden ssize_t
 uwsd_ssl_sendv(uwsd_connection_t *conn, struct iovec *iov, size_t len)
 {
 	mbedtls_ssl_context *ssl = conn->ssl;

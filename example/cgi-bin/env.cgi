@@ -11,5 +11,8 @@ env | sort
 echo ""
 
 echo "My HTTP request data (base64 encoded):"
-base64
+t=$(mktemp)
+cat > "$t"
+base64 < "$t"
+rm "$t"
 echo ""

@@ -33,6 +33,7 @@
 #include "ssl.h"
 #include "log.h"
 #include "script.h"
+#include "io.h"
 
 static LIST_HEAD(clients);
 
@@ -43,11 +44,8 @@ client_create(int fd, uwsd_listen_t *listen, struct sockaddr *peeraddr, size_t a
 
 	cl->listener = listen;
 
-	cl->rxbuf.pos = cl->rxbuf.data;
-	cl->rxbuf.end = cl->rxbuf.pos;
-
-	cl->txbuf.pos = cl->txbuf.data;
-	cl->txbuf.end = cl->txbuf.pos;
+	uwsd_io_reset(&cl->downstream);
+	uwsd_io_reset(&cl->upstream);
 
 	cl->upstream.upstream = true;
 
@@ -164,15 +162,6 @@ client_recv(uwsd_connection_t *conn, void *data, size_t len)
 		return uwsd_ssl_recv(conn, data, len);
 
 	return read(conn->ufd.fd, data, len);
-}
-
-__hidden ssize_t
-client_send(uwsd_connection_t *conn, const void *data, size_t len)
-{
-	if (conn->ssl)
-		return uwsd_ssl_send(conn, data, len);
-
-	return write(conn->ufd.fd, data, len);
 }
 
 __hidden ssize_t

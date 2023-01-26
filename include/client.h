@@ -30,11 +30,17 @@
 #include "ws.h"
 
 
+typedef struct {
+	uint8_t data[16384];
+	uint8_t *pos, *end;
+} uwsd_buffer_t;
+
 typedef struct uwsd_connection {
 	bool upstream;
 	void *ssl;
 	struct uloop_fd ufd;
 	struct uloop_timeout utm;
+	uwsd_buffer_t buf;
 } uwsd_connection_t;
 
 typedef struct uwsd_client_context {
@@ -54,14 +60,6 @@ typedef struct uwsd_client_context {
 		struct sockaddr_in in;
 		struct sockaddr_in6 in6;
 	} sa_peer;
-	struct {
-		uint8_t data[16384];
-		uint8_t *pos, *end, *sent;
-	} rxbuf;
-	struct {
-		uint8_t data[16384];
-		uint8_t *pos, *end;
-	} txbuf;
 	uwsd_connection_state_t state;
 	uwsd_http_method_t request_method;
 	size_t request_length;
@@ -74,6 +72,8 @@ typedef struct uwsd_client_context {
 	struct {
 		uwsd_http_state_t state;
 		ssize_t chunk_len;
+		uint32_t request_flags;
+		uint32_t response_flags;
 	} http;
 	struct {
 		uwsd_ws_state_t state;
@@ -99,8 +99,8 @@ typedef struct uwsd_client_context {
 		ws_frame_header_t header;
 		uint64_t len;
 		uint8_t mask[4];
-		struct iovec tx[2];
 	} ws;
+	struct iovec tx[3];
 } uwsd_client_context_t;
 
 __hidden void client_create(int, uwsd_listen_t *, struct sockaddr *, size_t);
@@ -110,7 +110,6 @@ __hidden void client_free_all(void);
 __hidden bool client_accept(uwsd_client_context_t *);
 __hidden ssize_t client_pending(uwsd_connection_t *);
 __hidden ssize_t client_recv(uwsd_connection_t *, void *, size_t);
-__hidden ssize_t client_send(uwsd_connection_t *, const void *, size_t);
 __hidden ssize_t client_sendv(uwsd_connection_t *, struct iovec *, size_t);
 __hidden ssize_t client_sendfile(uwsd_connection_t *, int, off_t *, size_t);
 

@@ -37,7 +37,7 @@ static const uwsd_state_entry_t states[] = {
 	[STATE_CONN_IDLE] = {
 		.channels   = CHANNEL_DOWNSTREAM,
 		.events     = EVENT_READABLE,
-		.io_cb      = uwsd_http_state_request_header,
+		.io_cb      = uwsd_http_state_request_recv,
 		.timeout    = TIMEOUT_DOWNSTREAM_IDLE,
 		.timeout_cb = uwsd_http_state_idle_timeout
 	},
@@ -45,36 +45,15 @@ static const uwsd_state_entry_t states[] = {
 	[STATE_CONN_REQUEST] = {
 		.channels   = CHANNEL_DOWNSTREAM,
 		.events     = EVENT_READABLE,
-		.io_cb      = uwsd_http_state_request_header,
+		.io_cb      = uwsd_http_state_request_recv,
 		.timeout    = TIMEOUT_DOWNSTREAM_REQUEST,
 		.timeout_cb = uwsd_http_state_request_timeout
 	},
 
-	[STATE_CONN_ERROR_ASYNC] = {
+	[STATE_CONN_RESPONSE] = {
 		.channels   = CHANNEL_DOWNSTREAM,
 		.events     = EVENT_WRITABLE,
 		.io_cb      = uwsd_http_state_response_send,
-		.timeout    = TIMEOUT_DOWNSTREAM_TRANSFER,
-		.timeout_cb = uwsd_http_state_response_timeout
-	},
-	[STATE_CONN_REPLY_ASYNC] = {
-		.channels   = CHANNEL_DOWNSTREAM,
-		.events     = EVENT_WRITABLE,
-		.io_cb      = uwsd_http_state_response_send,
-		.timeout    = TIMEOUT_DOWNSTREAM_TRANSFER,
-		.timeout_cb = uwsd_http_state_response_timeout
-	},
-	[STATE_CONN_REPLY_FILECOPY] = {
-		.channels   = CHANNEL_DOWNSTREAM,
-		.events     = EVENT_WRITABLE,
-		.io_cb      = uwsd_http_state_response_send,
-		.timeout    = TIMEOUT_DOWNSTREAM_TRANSFER,
-		.timeout_cb = uwsd_http_state_response_timeout
-	},
-	[STATE_CONN_REPLY_SENDFILE] = {
-		.channels   = CHANNEL_DOWNSTREAM,
-		.events     = EVENT_WRITABLE,
-		.io_cb      = uwsd_http_state_response_sendfile,
 		.timeout    = TIMEOUT_DOWNSTREAM_TRANSFER,
 		.timeout_cb = uwsd_http_state_response_timeout
 	},
@@ -272,17 +251,15 @@ uwsd_state_transition(uwsd_client_context_t *cl, uwsd_connection_state_t state)
 		((se->events & EVENT_WRITABLE) ? ULOOP_WRITE : 0) |
 		((se->events & EVENT_READABLE) ? ULOOP_READ : 0);
 
-	int timeout;
+	int timeout = timeout_value(cl, se->timeout);
 
-	uwsd_log_debug(cl, "IO state %s -> %s [Td: %lldms] [Tu: %lldms]",
+	uwsd_log_debug(cl, "IO state %s -> %s [Td: %lldms -> %dms] [Tu: %lldms -> %dms]",
 		state_name(cl->state), state_name(state),
-		uloop_timeout_remaining64(&cl->downstream.utm),
-		uloop_timeout_remaining64(&cl->upstream.utm)
+		uloop_timeout_remaining64(&cl->downstream.utm), (se->channels & CHANNEL_DOWNSTREAM) ? timeout : -1,
+		uloop_timeout_remaining64(&cl->upstream.utm), (se->channels & CHANNEL_UPSTREAM) ? timeout : -1
 	);
 
 	cl->state = state;
-
-	timeout = timeout_value(cl, se->timeout);
 
 	if (se->channels & CHANNEL_UPSTREAM) {
 		if (client_pending(&cl->upstream)) {

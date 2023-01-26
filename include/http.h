@@ -51,7 +51,16 @@
 	STATE(CHUNK_TRAILER_LF),	\
 	STATE(CHUNK_DONE),			\
 								\
-	STATE(REQUEST_DONE)
+	STATE(REQUEST_DONE),		\
+	STATE(BODY_CLOSE)
+
+typedef enum {
+	HTTP_WANT_CLOSE   = (1 << 0),
+	HTTP_SEND_PLAIN   = (1 << 1),
+	HTTP_SEND_CHUNKED = (1 << 2),
+	HTTP_SEND_COPY    = (1 << 3),
+	HTTP_SEND_FILE    = (1 << 4),
+} uwsd_http_flag_t;
 
 typedef enum {
 	HTTP_GET,
@@ -103,9 +112,20 @@ uwsd_http_reply_buffer(void *buf, size_t buflen, double http_version,
 
 #define uwsd_http_error_send(cl, code, reason, msg, ...)				\
 	do {																\
-		uwsd_http_reply(cl, code, reason, msg, ##__VA_ARGS__, NULL);	\
-		uwsd_http_reply_send(cl, true);									\
+		uwsd_http_reply(cl, code, reason, msg,							\
+			##__VA_ARGS__,												\
+			"Connection", "close", UWSD_HTTP_REPLY_EOH);				\
+																		\
+		if (uwsd_http_reply_send(cl, true))								\
+			client_free(cl, "%hu (%s)", code, reason ? reason : "-");	\
 	} while(0)
+
+#define uwsd_http_error_return(cl, ...)									\
+	do {																\
+		uwsd_http_error_send(cl, __VA_ARGS__);							\
+																		\
+		return false;													\
+	} while (0)
 
 __hidden char *uwsd_http_header_lookup(uwsd_client_context_t *, const char *);
 __hidden bool uwsd_http_header_contains(uwsd_client_context_t *, const char *, const char *);
@@ -116,11 +136,10 @@ __hidden void uwsd_http_state_idle_timeout(uwsd_client_context_t *, uwsd_connect
 
 __hidden void uwsd_http_state_accept(uwsd_client_context_t *, uwsd_connection_state_t, bool);
 
-__hidden void uwsd_http_state_request_header(uwsd_client_context_t *, uwsd_connection_state_t, bool);
+__hidden void uwsd_http_state_request_recv(uwsd_client_context_t *, uwsd_connection_state_t, bool);
 __hidden void uwsd_http_state_request_timeout(uwsd_client_context_t *, uwsd_connection_state_t, bool);
 
 __hidden void uwsd_http_state_response_send(uwsd_client_context_t *, uwsd_connection_state_t, bool);
-__hidden void uwsd_http_state_response_sendfile(uwsd_client_context_t *, uwsd_connection_state_t, bool);
 __hidden void uwsd_http_state_response_timeout(uwsd_client_context_t *, uwsd_connection_state_t, bool);
 
 __hidden void uwsd_http_state_upstream_connected(uwsd_client_context_t *, uwsd_connection_state_t, bool);

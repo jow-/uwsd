@@ -29,10 +29,7 @@ typedef struct uwsd_client_context uwsd_client_context_t;
 	STATE(ACCEPT),				\
 	STATE(IDLE),				\
 	STATE(REQUEST),				\
-	STATE(ERROR_ASYNC),			\
-	STATE(REPLY_ASYNC),			\
-	STATE(REPLY_SENDFILE),		\
-	STATE(REPLY_FILECOPY),		\
+	STATE(RESPONSE),			\
 	STATE(UPSTREAM_CONNECT),	\
 	STATE(UPSTREAM_SEND),		\
 	STATE(UPSTREAM_RECV),		\
