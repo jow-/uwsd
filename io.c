@@ -128,27 +128,30 @@ uwsd_io_recv(uwsd_connection_t *conn)
 
 	errno = 0;
 
-	rlen = client_recv(conn, conn->buf.data, sizeof(conn->buf.data));
+	conn->buf.pos = conn->buf.data;
+	conn->buf.end = conn->buf.pos;
 
-	if (rlen == -1) {
-		if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
+	while (conn->buf.end != conn->buf.data + sizeof(conn->buf.data)) {
+		rlen = client_recv(conn, conn->buf.end,
+			sizeof(conn->buf.data) - (conn->buf.end - conn->buf.data));
+
+		if (rlen == -1) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+				break;
+
+			if (errno == EINTR)
+				continue;
+
 			client_free(cl, "%s recv error: %m", conn->upstream ? "upstream" : "downstream");
 
 			return false;
 		}
 
-		rlen = 0;
-	}
-#if 0
-	else if (rlen == 0) {
-		client_free(cl, "%s connection closed", conn->upstream ? "upstream" : "downstream");
+		if (rlen == 0)
+			break;
 
-		return false;
+		conn->buf.end += rlen;
 	}
-#endif
-
-	conn->buf.pos = conn->buf.data;
-	conn->buf.end = conn->buf.pos + rlen;
 
 	return true;
 }
