@@ -31,6 +31,33 @@
 #include "log.h"
 
 
+#ifndef HAVE_ACCEPT4
+#include <fcntl.h>
+
+enum {
+	SOCK_NONBLOCK = (1 << 0),
+	SOCK_CLOEXEC  = (1 << 1)
+};
+
+static int
+accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags)
+{
+	int fd = accept(sockfd, addr, addrlen);
+
+	if (fd == -1)
+		return -1;
+
+	if (flags & SOCK_NONBLOCK)
+		fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+
+	if (flags & SOCK_CLOEXEC)
+		fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
+
+	return fd;
+}
+
+#endif
+
 static void
 accept_cb(struct uloop_fd *ufd, unsigned int events)
 {
@@ -39,7 +66,7 @@ accept_cb(struct uloop_fd *ufd, unsigned int events)
 	struct sockaddr_in6 sa = { 0 };
 	int fd;
 
-	fd = accept(ufd->fd, (struct sockaddr *)&sa, &alen);
+	fd = accept4(ufd->fd, (struct sockaddr *)&sa, &alen, SOCK_NONBLOCK|SOCK_CLOEXEC);
 
 	if (fd == -1) {
 		uwsd_log_err(NULL, "accept failed: %m");
