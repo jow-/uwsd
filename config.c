@@ -118,6 +118,8 @@ static void free_auth(void *obj);
 static bool validate_ssl(void *obj);
 static void free_ssl(void *obj);
 
+static void free_toplevel(void *obj);
+
 static const config_block_t ssl_spec = {
 	.size = sizeof(uwsd_ssl_t),
 	.validate = validate_ssl,
@@ -394,6 +396,7 @@ static const config_block_t listen_spec = {
 
 static const config_block_t toplevel_spec = {
 	.size = sizeof(uwsd_config_t),
+	.free = free_toplevel,
 	.properties = {
 		{ "default-charset", STRING,
 			offsetof(uwsd_config_t, default_charset), { 0 } },
@@ -407,6 +410,15 @@ static const config_block_t toplevel_spec = {
 	}
 };
 
+
+static char *
+addstr(const char *s)
+{
+	config->strings = xrealloc(config->strings, sizeof(char *) * (config->nstrings + 1));
+	config->strings[config->nstrings] = xstrdup(s);
+
+	return config->strings[config->nstrings++];
+}
 
 static char
 hex(char c)
@@ -564,10 +576,6 @@ config_free_object(const config_block_t *spec, void *base)
 
 	for (prop = spec->properties; prop->name; prop++) {
 		switch (prop->type) {
-		case STRING:
-			free(char_ptr(prop, base));
-			break;
-
 		case NESTED_MULTIPLE:
 			list_for_each_safe(e, tmp, list_ptr(prop, base)) {
 				list_del(e);
@@ -616,7 +624,7 @@ config_parse_value(const char **input, const config_prop_t *prop, void *base)
 		if (!p || !*p)
 			return parse_error("Expecting non-empty value");
 
-		char_ptr(prop, base) = strdup(p);
+		char_ptr(prop, base) = addstr(p);
 
 		break;
 
@@ -694,7 +702,7 @@ config_parse_value(const char **input, const config_prop_t *prop, void *base)
 
 			if (*e) {
 				l = xrealloc(l, sizeof(char *) * (n + 2));
-				l[n++] = xstrdup(e);
+				l[n++] = addstr(e);
 				l[n] = NULL;
 			}
 
@@ -837,7 +845,7 @@ parse_hostname_match(void *obj, const char *label)
 		return parse_error("Expecting hostname value for 'match-hostname' property");
 
 	match->type = UWSD_MATCH_HOSTNAME;
-	match->data.value = xstrdup(label);
+	match->data.value = addstr(label);
 
 	return true;
 }
@@ -851,7 +859,7 @@ parse_path_match(void *obj, const char *label)
 		return parse_error("Expecting absolute path value for 'match-path' property");
 
 	match->type = UWSD_MATCH_PATH;
-	match->data.value = xstrdup(label);
+	match->data.value = addstr(label);
 
 	return true;
 }
@@ -1114,7 +1122,7 @@ parse_auth_basic(void *obj, const char *label)
 	uwsd_auth_t *auth = obj;
 
 	auth->type = UWSD_AUTH_BASIC;
-	auth->data.basic.realm = xstrdup(label ? label : "Protected area");
+	auth->data.basic.realm = addstr(label ? label : "Protected area");
 
 	return true;
 }
@@ -1181,7 +1189,7 @@ parse_backend(void *obj, const char *label)
 	if (!label || !*label)
 		return parse_error("Expecting name for 'backend' property");
 
-	backend->name = xstrdup(label);
+	backend->name = addstr(label);
 
 	return true;
 }
@@ -1280,6 +1288,18 @@ free_ssl(void *obj)
 	uwsd_ssl_t *ssl = obj;
 
 	return uwsd_ssl_ctx_free(ssl);
+}
+
+
+static void
+free_toplevel(void *obj)
+{
+	uwsd_config_t *conf = obj;
+
+	while (conf->nstrings)
+		free(conf->strings[--conf->nstrings]);
+
+	free(conf->strings);
 }
 
 

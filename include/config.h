@@ -35,6 +35,8 @@ typedef struct {
 	char **mimetypes;
 	struct list_head backends;
 	struct list_head listeners;
+	char **strings;
+	size_t nstrings;
 } uwsd_config_t;
 
 extern uwsd_config_t *config;
