@@ -23,6 +23,7 @@
 #include <assert.h>
 #include <fnmatch.h>
 
+#include <arpa/inet.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 
@@ -39,12 +40,11 @@
 #include "config.h"
 #include "io.h"
 
-#define HTTP_METHOD(name) { #name, sizeof(#name) - 1, HTTP_##name }
+#define HTTP_METHOD(name) { #name, HTTP_##name }
 
 /* NB: order must be in sync with uwsd_http_method_t of http.h */
 static struct {
 	const char *name;
-	size_t nlen;
 	uwsd_http_method_t method;
 } http_request_methods[] = {
 	HTTP_METHOD(GET),
@@ -99,6 +99,8 @@ http_state_reset(uwsd_client_context_t *cl, uwsd_http_state_t state)
 	cl->http_headers = NULL;
 	cl->request_uri = NULL;
 	cl->request_method = HTTP_GET;
+	cl->request_length = 0;
+	cl->head_length = 0;
 
 	/* Reset buffer state */
 	uwsd_io_reset(&cl->downstream);
@@ -112,7 +114,7 @@ http_state_reset(uwsd_client_context_t *cl, uwsd_http_state_t state)
 }
 
 static bool
-http_header_parse(uwsd_client_context_t *cl, char *line, size_t len, bool essential_only)
+http_header_parse(uwsd_client_context_t *cl, char *line, size_t len)
 {
 	char *name, *value, *p, *e = line + len;
 	uwsd_http_header_t *hdr = NULL;
@@ -134,12 +136,6 @@ http_header_parse(uwsd_client_context_t *cl, char *line, size_t len, bool essent
 		p = name + memcspn(name, e - name, ":");
 
 		if (p == name || p == e || *p != ':')
-			return false;
-
-		if (essential_only &&
-		    !strncasecmp(name, "Connection", p - name) &&
-		    !strncasecmp(name, "Content-Length", p - name) &&
-		    !strncasecmp(name, "Transfer-Encoding", p - name))
 			return false;
 
 		/* Header name already seen? */
@@ -228,6 +224,20 @@ http_may_have_body(uint16_t code)
 }
 
 static bool
+http_is_hop_by_hop_header(uwsd_http_header_t *hdr)
+{
+	return (!strcasecmp(hdr->name, "Status") ||  /* only valid for CGI responses */
+	        !strcasecmp(hdr->name, "Keep-Alive") ||
+	        !strcasecmp(hdr->name, "Transfer-Encoding") ||
+	        !strcasecmp(hdr->name, "TE") ||
+	        !strcasecmp(hdr->name, "Connection") ||
+	        !strcasecmp(hdr->name, "Trailer") ||
+	        !strcasecmp(hdr->name, "Upgrade") ||
+	        !strcasecmp(hdr->name, "Proxy-Authorization") ||
+	        !strcasecmp(hdr->name, "Proxy-Authenticate"));
+}
+
+static bool
 http_handle_body_data(uwsd_client_context_t *cl, uwsd_connection_t *conn, void *data, size_t len)
 {
 	uwsd_action_t *action = cl->action;
@@ -251,14 +261,28 @@ http_handle_body_data(uwsd_client_context_t *cl, uwsd_connection_t *conn, void *
 		else {
 			uwsd_iov_put(cl, data, len);
 		}
+	}
+	else {
+		if (!action || action->type != UWSD_ACTION_SCRIPT) {
+			if (cl->http.request_flags & HTTP_SEND_CHUNKED) {
+				uwsd_io_reset(&cl->upstream);
+				uwsd_io_printf(&cl->upstream, "%zx\r\n\r\n", len);
 
-		return true;
+				buf = uwsd_io_getbuf(&cl->upstream);
+				buflen = uwsd_io_offset(&cl->upstream);
+
+				uwsd_iov_put(cl, buf, buflen - 2, data, len, buf + buflen - 2, 2);
+			}
+			else {
+				uwsd_iov_put(cl, data, len);
+			}
+		}
+		else {
+			return uwsd_script_bodydata(cl, data, len);
+		}
 	}
 
-	if (!action || action->type != UWSD_ACTION_SCRIPT)
-		return true;
-
-	return uwsd_script_bodydata(cl, data, len);
+	return true;
 }
 
 static bool
@@ -324,7 +348,7 @@ http_chunked_recv(uwsd_client_context_t *cl, uwsd_connection_t *conn)
 		switch (cl->http.state) {
 		case STATE_HTTP_CHUNK_HEADER:
 			if (isxdigit(ch)) {
-				cl->http.chunk_len = cl->http.chunk_len * 16 + hex(ch);
+				cl->request_length = cl->request_length * 16 + hex(ch);
 			}
 			else if (ch == ';') {
 				http_state_transition(cl, STATE_HTTP_CHUNK_HEADER_EXT);
@@ -349,7 +373,7 @@ http_chunked_recv(uwsd_client_context_t *cl, uwsd_connection_t *conn)
 		case STATE_HTTP_CHUNK_HEADER_LF:
 			if (ch == '\n') {
 				data = uwsd_io_getpos(conn);
-				http_state_transition(cl, cl->http.chunk_len ? STATE_HTTP_CHUNK_DATA : STATE_HTTP_CHUNK_TRAILER);
+				http_state_transition(cl, cl->request_length ? STATE_HTTP_CHUNK_DATA : STATE_HTTP_CHUNK_TRAILER);
 			}
 			else {
 				client_free(cl, "invalid chunk header [%02x]", ch);
@@ -360,11 +384,13 @@ http_chunked_recv(uwsd_client_context_t *cl, uwsd_connection_t *conn)
 			break;
 
 		case STATE_HTTP_CHUNK_DATA:
-			if (--cl->http.chunk_len == 0) {
+			if (--cl->request_length == 0) {
 				if (!http_handle_body_data(cl, conn, data, uwsd_io_getpos(conn) - data))
 					return false;
 
 				http_state_transition(cl, STATE_HTTP_CHUNK_DATA_CR);
+
+				return true;
 			}
 
 			break;
@@ -432,9 +458,14 @@ http_chunked_recv(uwsd_client_context_t *cl, uwsd_connection_t *conn)
 			break;
 
 		default:
-			return true;
+			client_free(cl, "Unexpected HTTP parse state: %s", http_state_name(cl->http.state));
+
+			return false;
 		}
 	}
+
+	if (cl->http.state == STATE_HTTP_CHUNK_DATA && uwsd_io_getpos(conn) > data)
+		return http_handle_body_data(cl, conn, data, uwsd_io_getpos(conn) - data);
 
 	return true;
 }
@@ -485,10 +516,6 @@ http_request_recv(uwsd_client_context_t *cl)
 
 	uwsd_http_debug(cl, "request receive, %zu byte pending", uwsd_io_pending(conn));
 
-	// FIXME: track request size
-	//if (uwsd_io_full(&cl->downstream))
-	//	uwsd_http_error_return(cl, 431, "Request Header Fields Too Large", "Request header too long");
-
 	switch (cl->http.state) {
 	case STATE_HTTP_BODY_KNOWN_LENGTH:
 		return http_contentlen_recv(cl, conn);
@@ -528,6 +555,9 @@ http_request_recv(uwsd_client_context_t *cl)
 		if (ch == EOF)
 			break;
 
+		if (cl->head_length++ == sizeof(httpbuf->buf.data))
+			uwsd_http_error_return(cl, 431, "Request Header Fields Too Large", "Request header line too long\n");
+
 		switch (cl->http.state) {
 		case STATE_HTTP_REQUEST_METHOD:
 			if (ch == ' ') {
@@ -554,7 +584,12 @@ http_request_recv(uwsd_client_context_t *cl)
 			break;
 
 		case STATE_HTTP_REQUEST_URI:
-			if (ch == ' ') {
+			if (ch == '\n') {
+				ch = '\r';
+				uwsd_io_ungetc(conn);
+			}
+
+			if (ch == ' ' || ch == '\r') {
 				assert(!cl->request_uri);
 
 				cl->request_uri = uwsd_io_strdup(httpbuf);
@@ -562,7 +597,14 @@ http_request_recv(uwsd_client_context_t *cl)
 				if (!cl->request_uri)
 					uwsd_http_error_return(cl, 500, "Internal Server Error", "Out of memory\n");
 
-				http_state_transition(cl, STATE_HTTP_REQUEST_VERSION);
+				if (ch == '\r') {
+					cl->http_version = 0x0009;
+					http_state_transition(cl, STATE_HTTP_REQUESTLINE_LF);
+				}
+				else {
+					http_state_transition(cl, STATE_HTTP_REQUEST_VERSION);
+				}
+
 				uwsd_io_reset(httpbuf);
 			}
 			else {
@@ -576,10 +618,13 @@ http_request_recv(uwsd_client_context_t *cl)
 			break;
 
 		case STATE_HTTP_REQUEST_VERSION:
+			if (ch == '\n') {
+				ch = '\r';
+				uwsd_io_ungetc(conn);
+			}
+
 			if (ch == '\r') {
-				if (!uwsd_io_strcmp(httpbuf, "HTTP/0.9"))
-					cl->http_version = 0x0009;
-				else if (!uwsd_io_strcmp(httpbuf, "HTTP/1.0"))
+				if (!uwsd_io_strcmp(httpbuf, "HTTP/1.0"))
 					cl->http_version = 0x0100;
 				else if (!uwsd_io_strcmp(httpbuf, "HTTP/1.1"))
 					cl->http_version = 0x0101;
@@ -620,6 +665,11 @@ http_request_recv(uwsd_client_context_t *cl)
 			break;
 
 		case STATE_HTTP_HEADERLINE:
+			if (ch == '\n') {
+				ch = '\r';
+				uwsd_io_ungetc(conn);
+			}
+
 			if (ch == '\r')
 				http_state_transition(cl, STATE_HTTP_HEADERLINE_LF);
 			else if (!uwsd_io_putchar(httpbuf, ch))
@@ -630,7 +680,7 @@ http_request_recv(uwsd_client_context_t *cl)
 		case STATE_HTTP_HEADERLINE_LF:
 			if (ch == '\n') {
 				if (len) {
-					if (!http_header_parse(cl, uwsd_io_getbuf(httpbuf), len, false))
+					if (!http_header_parse(cl, uwsd_io_getbuf(httpbuf), len))
 						uwsd_http_error_return(cl, 400, "Bad Request", "Invalid header line\n");
 
 					http_state_transition(cl, STATE_HTTP_HEADERLINE);
@@ -664,12 +714,6 @@ http_response_recv(uwsd_client_context_t *cl)
 	uwsd_connection_t *conn = &cl->upstream;
 	size_t len;
 	int ch;
-
-	uwsd_http_debug(cl, "response receive, %zu byte pending", uwsd_io_pending(conn));
-
-	// FIXME: track response size
-	//if (uwsd_io_full(&cl->downstream))
-	//	uwsd_http_error_return(cl, 431, "Request Header Fields Too Large", "Request header too long");
 
 	switch (cl->http.state) {
 	case STATE_HTTP_BODY_UNTIL_EOF:
@@ -707,12 +751,14 @@ http_response_recv(uwsd_client_context_t *cl)
 		if (ch == EOF)
 			break;
 
+		if (cl->head_length++ == sizeof(httpbuf->buf.data))
+			uwsd_http_error_return(cl, 502, "Bad Gateway",
+				"Upstream response has too long header");
+
 		switch (cl->http.state) {
 		case STATE_HTTP_STATUS_VERSION:
 			if (ch == ' ') {
-				if (!uwsd_io_strcmp(httpbuf, "HTTP/0.9"))
-					cl->http_version = 0x0009;
-				else if (!uwsd_io_strcmp(httpbuf, "HTTP/1.0"))
+				if (!uwsd_io_strcmp(httpbuf, "HTTP/1.0"))
 					cl->http_version = 0x0100;
 				else if (!uwsd_io_strcmp(httpbuf, "HTTP/1.1"))
 					cl->http_version = 0x0101;
@@ -806,7 +852,7 @@ http_response_recv(uwsd_client_context_t *cl)
 		case STATE_HTTP_HEADERLINE_LF:
 			if (ch == '\n') {
 				if (len) {
-					http_header_parse(cl, uwsd_io_getbuf(httpbuf), len, true);
+					http_header_parse(cl, uwsd_io_getbuf(httpbuf), len);
 					http_state_transition(cl, STATE_HTTP_HEADERLINE);
 					uwsd_io_reset(httpbuf);
 				}
@@ -894,7 +940,7 @@ uwsd_http_reply_send(uwsd_client_context_t *cl, bool error)
 	cl->http.response_flags |= HTTP_SEND_COPY;
 
 	if (!uwsd_iov_tx(conn, STATE_CONN_RESPONSE))
-		return false; /* error or partial send */
+		return false; /* failure or partial send */
 
 	if (http_connection_close(cl))
 		return false;
@@ -1491,7 +1537,7 @@ uwsd_http_state_response_send(uwsd_client_context_t *cl, uwsd_connection_state_t
 
 	/* Sending buffered data to stream */
 	if (!uwsd_iov_tx(conn, state))
-		return; /* error or partial send */
+		return; /* failure or partial send */
 
 	/* If we're not serving a HEAD request, then start transmitting file contents */
 	if (cl->request_method != HTTP_HEAD) {
@@ -1529,7 +1575,7 @@ uwsd_http_state_response_send(uwsd_client_context_t *cl, uwsd_connection_state_t
 		else if (cl->http.response_flags & HTTP_SEND_COPY) {
 			do {
 				if (!uwsd_io_recv(file))
-					return; /* error */
+					return; /* failure */
 			} while (errno == EINTR);
 
 			/* Remain in send state as long as there is data to transmit */
@@ -1560,12 +1606,101 @@ uwsd_http_state_upstream_timeout(uwsd_client_context_t *cl, uwsd_connection_stat
 		client_free(cl, "Timeout while reading upstream response");
 }
 
+static void
+append_via_header(uwsd_connection_t *httpbuf, uwsd_client_context_t *cl, const char *previous_via)
+{
+	char addr[INET6_ADDRSTRLEN];
+	uint16_t port;
+
+	if (previous_via)
+		uwsd_io_printf(httpbuf, "Via: %s, ", previous_via);
+	else
+		uwsd_io_printf(httpbuf, "Via: ");
+
+	uwsd_io_printf(httpbuf, "%s ", (cl->http_version == 0x0101) ? "1.1" : "1.0");
+
+	if (cl->sa_local.unspec.sa_family == AF_INET6) {
+		if (IN6_IS_ADDR_V4MAPPED(&cl->sa_local.in6.sin6_addr)) {
+			inet_ntop(AF_INET, &cl->sa_local.in6.sin6_addr.s6_addr[12], addr, sizeof(addr));
+			uwsd_io_printf(httpbuf, "%s", addr);
+		}
+		else {
+			inet_ntop(AF_INET6, &cl->sa_local.in6.sin6_addr, addr, sizeof(addr));
+			uwsd_io_printf(httpbuf, "[%s]", addr);
+		}
+	}
+	else {
+		inet_ntop(AF_INET, &cl->sa_local.in.sin_addr, addr, sizeof(addr));
+		uwsd_io_printf(httpbuf, "%s", addr);
+	}
+
+	port = ntohs(cl->sa_local.in.sin_port);
+
+	if (port != 80)
+		uwsd_io_printf(httpbuf, ":%hu", port);
+
+	uwsd_io_printf(httpbuf, "\r\n");
+}
+
 __hidden void
 uwsd_http_state_upstream_connected(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
+	uwsd_connection_t *httpbuf = &cl->upstream;
+	uwsd_http_header_t *hdr;
+	char *via = NULL;
+	bool chunked;
+	size_t i;
+
 	if (cl->action->type == UWSD_ACTION_SCRIPT) {
 		if (!uwsd_script_request(cl, -1))
 			return; /* failure */
+	}
+	else if (cl->action->type == UWSD_ACTION_TCP_PROXY) {
+		uwsd_io_reset(httpbuf);
+		uwsd_io_printf(httpbuf, "%s %s HTTP/%s\r\n",
+			http_request_methods[cl->request_method].name, cl->request_uri,
+			(cl->http_version == 0x0101) ? "1.1" : "1.0");
+
+		chunked = (cl->http.state == STATE_HTTP_CHUNK_HEADER);
+
+		if (chunked) {
+			uwsd_io_printf(httpbuf, "Transfer-Encoding: chunked\r\n");
+			cl->http.request_flags |= HTTP_SEND_CHUNKED;
+		}
+
+		for (i = 0; i < cl->http_num_headers; i++) {
+			hdr = &cl->http_headers[i];
+
+			if (http_is_hop_by_hop_header(hdr))
+				continue;
+
+			if (chunked && !strcasecmp(hdr->name, "Content-Length"))
+				continue;
+
+			if (!strcasecmp(hdr->name, "Via")) {
+				via = hdr->value;
+				continue;
+			}
+
+			uwsd_io_printf(httpbuf, "%s: %s\r\n",
+				hdr->name, hdr->value);
+		}
+
+		append_via_header(httpbuf, cl, via);
+
+		if (!uwsd_io_printf(httpbuf, "\r\n")) {
+			uwsd_http_error_send(cl, 431,
+				"Request Header Fields Too Large",
+				"Request header too long\n");
+
+			return;
+		}
+
+		/* Send header. XXX: Pipelining not handled yet. */
+		uwsd_iov_put(cl, uwsd_io_getbuf(httpbuf), uwsd_io_offset(httpbuf));
+
+		if (!uwsd_iov_tx(&cl->upstream, state))
+			return; /* failure or partial send */
 	}
 
 	if (!http_request_recv(cl))
@@ -1577,16 +1712,18 @@ uwsd_http_state_upstream_connected(uwsd_client_context_t *cl, uwsd_connection_st
 __hidden void
 uwsd_http_state_upstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
-	if (cl->action->type != UWSD_ACTION_SCRIPT) {
-		uwsd_iov_put(cl,
-			uwsd_io_getbuf(&cl->downstream), uwsd_io_offset(&cl->downstream));
+	while (true) {
+		if (cl->action->type != UWSD_ACTION_SCRIPT &&!uwsd_iov_tx(&cl->upstream, STATE_CONN_UPSTREAM_SEND))
+			return; /* failure or partial send */
 
-		if (!uwsd_iov_tx(&cl->upstream, STATE_CONN_UPSTREAM_SEND))
-			return; /* error or partial send */
+		if (!uwsd_io_pending(&cl->downstream) &&
+		    cl->http.state != STATE_HTTP_CHUNK_DONE &&
+		    cl->http.state != STATE_HTTP_REQUEST_DONE)
+			break;
+
+		if (!http_request_recv(cl))
+			return; /* failure */
 	}
-
-	if (!http_request_recv(cl))
-		return; /* error */
 
 	if (cl->http.state == STATE_HTTP_BODY_CLOSE) {
 		http_state_reset(cl, STATE_HTTP_STATUS_VERSION);
@@ -1621,14 +1758,62 @@ status_header_parse(uwsd_client_context_t *cl, uint16_t *code, char **message)
 	return **message;
 }
 
+static void
+append_host_header(uwsd_connection_t *httpbuf, uwsd_client_context_t *cl)
+{
+	char *host = uwsd_http_header_lookup(cl, "Host");
+	char addr[INET6_ADDRSTRLEN];
+
+	if (host) {
+		uwsd_io_printf(httpbuf, "Host: %s\r\n", host);
+
+		return;
+	}
+
+	uwsd_io_printf(httpbuf, "Host: ");
+
+	if (cl->action && cl->action->type == UWSD_ACTION_TCP_PROXY) {
+		uwsd_io_printf(httpbuf, "%s", cl->action->data.proxy.hostname);
+
+		if (cl->action->data.proxy.port != 80)
+			uwsd_io_printf(httpbuf, ":%hu", cl->action->data.proxy.port);
+	}
+
+	else {
+		if (cl->listener->hostname) {
+			uwsd_io_printf(httpbuf, "%s", cl->listener->hostname);
+		}
+		else if (cl->sa_local.unspec.sa_family == AF_INET6) {
+			if (IN6_IS_ADDR_V4MAPPED(&cl->sa_local.in6.sin6_addr)) {
+				inet_ntop(AF_INET, &cl->sa_local.in6.sin6_addr.s6_addr[12], addr, sizeof(addr));
+				uwsd_io_printf(httpbuf, "%s", addr);
+			}
+			else {
+				inet_ntop(AF_INET6, &cl->sa_local.in6.sin6_addr, addr, sizeof(addr));
+				uwsd_io_printf(httpbuf, "[%s]", addr);
+			}
+		}
+		else {
+			inet_ntop(AF_INET, &cl->sa_local.in.sin_addr, addr, sizeof(addr));
+			uwsd_io_printf(httpbuf, "%s", addr);
+		}
+
+		if (ntohs(cl->sa_local.in.sin_port) != 80)
+			uwsd_io_printf(httpbuf, ":%hu", ntohs(cl->sa_local.in.sin_port));
+	}
+
+	uwsd_io_printf(httpbuf, "\r\n");
+}
+
 __hidden void
 uwsd_http_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
 	bool has_clen = false, has_ctype = false;
 	uwsd_connection_t *httpbuf = &cl->downstream;
 	uwsd_http_header_t *hdr;
+	char *msg, *via = NULL;
 	uint16_t code;
-	char *msg;
+	bool chunked;
 	size_t i;
 
 	if (!uwsd_io_readahead(&cl->upstream))
@@ -1636,6 +1821,11 @@ uwsd_http_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 
 	if (!http_response_recv(cl))
 		return; /* failure */
+
+	/* We might've been invoked by pending socket buffer data so far
+	 * without ever involving uloop. Force a state transition here to
+	 * trigger uloop registration for subsequent read notifications */
+	uwsd_state_transition(cl, state);
 
 	if (cl->http.state < STATE_HTTP_BODY_KNOWN_LENGTH)
 		return; /* await complete header */
@@ -1655,18 +1845,36 @@ uwsd_http_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 		}
 
 		uwsd_io_reset(httpbuf);
-		uwsd_io_printf(httpbuf, "HTTP/1.%d %03hu %s\r\n",
-			(cl->http_version == 0x0101), code, msg);
+		uwsd_io_printf(httpbuf, "HTTP/%s %03hu %s\r\n",
+			(cl->http_version == 0x0101) ? "1.1" : "1.0",
+			code, msg);
+
+		append_host_header(httpbuf, cl);
+
+		chunked = (cl->http.state == STATE_HTTP_CHUNK_HEADER);
 
 		for (i = 0; i < cl->http_num_headers; i++) {
 			hdr = &cl->http_headers[i];
 
-			has_clen  |= !strcasecmp(hdr->name, "Content-Length");
+			if (!strcasecmp(hdr->name, "Content-Length")) {
+				if (chunked)
+					continue;
+
+				has_clen = true;
+			}
+
 			has_ctype |= !strcasecmp(hdr->name, "Content-Type");
 
-			if (!strcasecmp(hdr->name, "Status") &&
-			    !strcasecmp(hdr->name, "Connection"))
+			if (http_is_hop_by_hop_header(hdr))
 				continue;
+
+			if (!strcasecmp(hdr->name, "Host"))
+				continue;
+
+			if (!strcasecmp(hdr->name, "Via")) {
+				via = hdr->value;
+				continue;
+			}
 
 			uwsd_io_printf(httpbuf, "%s: %s\r\n", hdr->name, hdr->value);
 		}
@@ -1687,7 +1895,15 @@ uwsd_http_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 			cl->http.response_flags |= HTTP_SEND_PLAIN;
 		}
 
-		uwsd_io_printf(httpbuf, "\r\n");
+		append_via_header(httpbuf, cl, via);
+
+		if (!uwsd_io_printf(httpbuf, "\r\n")) {
+			uwsd_http_error_send(cl, 502,
+				"Bad Gateway",
+				"Upstream response header too large\n");
+
+			return;
+		}
 
 		uwsd_iov_put(cl,
 			uwsd_io_getbuf(httpbuf), uwsd_io_offset(httpbuf));
@@ -1699,8 +1915,18 @@ uwsd_http_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 __hidden void
 uwsd_http_state_downstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
-	if (!uwsd_iov_tx(&cl->downstream, STATE_CONN_DOWNSTREAM_SEND))
-		return; /* error or partial send */
+	while (true) {
+		if (!uwsd_iov_tx(&cl->downstream, STATE_CONN_DOWNSTREAM_SEND))
+			return; /* failure or partial send */
+
+		if (!uwsd_io_pending(&cl->upstream) &&
+		    cl->http.state != STATE_HTTP_CHUNK_DONE &&
+		    cl->http.state != STATE_HTTP_REQUEST_DONE)
+			break;
+
+		if (!http_response_recv(cl))
+			return; /* failure */
+	}
 
 	if (cl->http.state == STATE_HTTP_BODY_CLOSE) {
 		if (http_connection_close(cl))
@@ -1711,7 +1937,9 @@ uwsd_http_state_downstream_send(uwsd_client_context_t *cl, uwsd_connection_state
 		if (cl->upstream.ufd.eof) {
 			uwsd_script_close(cl);
 
-			if (cl->upstream.ufd.fd == -1) {
+			if (cl->upstream.ufd.fd != -1) {
+				uwsd_http_debug(cl, "Closing connection to upstream server");
+
 				close(cl->upstream.ufd.fd);
 				cl->upstream.ufd.fd = -1;
 			}
@@ -1731,10 +1959,10 @@ __hidden void
 uwsd_http_state_downstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
 	if (!uwsd_io_readahead(&cl->downstream))
-		return; /* error */
+		return; /* failure */
 
 	if (!http_request_recv(cl))
-		return; /* error */
+		return; /* failure */
 
 	uwsd_state_transition(cl, STATE_CONN_UPSTREAM_SEND);
 }

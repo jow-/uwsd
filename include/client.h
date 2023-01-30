@@ -62,7 +62,7 @@ typedef struct uwsd_client_context {
 	} sa_peer;
 	uwsd_connection_state_t state;
 	uwsd_http_method_t request_method;
-	size_t request_length;
+	size_t request_length, head_length;
 	char *request_uri;
 	uint16_t http_version, http_status;
 	size_t http_num_headers;
@@ -71,7 +71,6 @@ typedef struct uwsd_client_context {
 	uwsd_connection_t upstream;
 	struct {
 		uwsd_http_state_t state;
-		ssize_t chunk_len;
 		uint32_t request_flags;
 		uint32_t response_flags;
 	} http;
