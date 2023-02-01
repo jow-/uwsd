@@ -781,6 +781,8 @@ config_parse_block(const char **input, const config_block_t *spec, void *base)
 		while (!skipchar(input, '}'))
 			if (!config_parse_property(input, spec, base))
 				return false;
+
+		skipchar(input, ';');
 	}
 	else if (!skipchar(input, ';')) {
 		return parse_error("Expecting '{' or ';'");
