@@ -357,13 +357,6 @@ ssl_load_certificates(uwsd_ssl_t *ctx, const char *directory)
 	FILE *fp;
 	DIR *dp;
 
-	if (!ssl_initialized) {
-		SSL_load_error_strings();
-		SSL_library_init();
-
-		ssl_initialized = true;
-	}
-
 	dp = opendir(directory);
 
 	if (!dp) {
@@ -414,17 +407,40 @@ SSL_get0_peer_certificate(const SSL *ssl)
 }
 #endif
 
+static int
+ssl_verify_loose_cb(int preverify_ok, X509_STORE_CTX *x509_ctx)
+{
+	int err;
+
+	if (preverify_ok == 1)
+		return 1;
+
+	err = X509_STORE_CTX_get_error(x509_ctx);
+
+	switch (err) {
+	case X509_V_OK:
+	case X509_V_ERR_CERT_NOT_YET_VALID:
+	case X509_V_ERR_CERT_HAS_EXPIRED:
+	case X509_V_ERR_CRL_NOT_YET_VALID:
+	case X509_V_ERR_CRL_HAS_EXPIRED:
+	case X509_V_ERR_ERROR_IN_CERT_NOT_BEFORE_FIELD:
+	case X509_V_ERR_ERROR_IN_CERT_NOT_AFTER_FIELD:
+	case X509_V_ERR_ERROR_IN_CRL_LAST_UPDATE_FIELD:
+	case X509_V_ERR_ERROR_IN_CRL_NEXT_UPDATE_FIELD:
+	case X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT:
+	case X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN:
+	case X509_V_ERR_CERT_UNTRUSTED:
+		return 1;
+
+	default:
+		return 0;
+	}
+}
+
 __hidden bool
 uwsd_ssl_ctx_init(uwsd_ssl_t *ctx)
 {
 	FILE *pkey_fp, *cert_fp;
-
-	if (!ssl_initialized) {
-		SSL_load_error_strings();
-		SSL_library_init();
-
-		ssl_initialized = true;
-	}
 
 	if (ctx->certificate_directory)
 		ssl_load_certificates(ctx, ctx->certificate_directory);
@@ -475,6 +491,78 @@ uwsd_ssl_ctx_free(uwsd_ssl_t *ctx)
 		SSL_CTX_free(ctx->contexts.entries[--ctx->contexts.count]);
 
 	free(ctx->contexts.entries);
+}
+
+__hidden bool
+uwsd_ssl_client_ctx_init(uwsd_ssl_client_t *ctx)
+{
+	SSL_CTX *ssl_ctx = ssl_create_context(ctx->protocols, ctx->ciphers);
+	FILE *pkey_fp, *cert_fp;
+
+	if (!ssl_ctx)
+		return false;
+
+	if (!!ctx->private_key ^ !!ctx->certificate) {
+		uwsd_ssl_err(NULL, "Require both 'private-key' and 'certificate' properties");
+
+		return false;
+	}
+
+	if (ctx->private_key && ctx->certificate) {
+		pkey_fp = fopen(ctx->private_key, "r");
+
+		if (!pkey_fp) {
+			uwsd_ssl_err(NULL, "Unable to open private key file '%s': %m", ctx->private_key);
+
+			return false;
+		}
+
+		cert_fp = fopen(ctx->certificate, "r");
+
+		if (!cert_fp) {
+			uwsd_ssl_err(NULL, "Unable to open certificate file '%s': %m", ctx->certificate);
+			fclose(pkey_fp);
+
+			return false;
+		}
+
+		if (!ssl_load_pem_privkey(ssl_ctx, pkey_fp, ctx->private_key) ||
+		    !ssl_load_pem_certificates(ssl_ctx, cert_fp, ctx->certificate)) {
+
+			SSL_CTX_free(ssl_ctx);
+
+			return false;
+		}
+
+		fclose(pkey_fp);
+		fclose(cert_fp);
+	}
+
+	switch (ctx->verify_server) {
+	case UWSD_VERIFY_SERVER_STRICT:
+		SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER, NULL);
+		break;
+
+	case UWSD_VERIFY_SERVER_LOOSE:
+		SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER, ssl_verify_loose_cb);
+		break;
+
+	case UWSD_VERIFY_SERVER_SKIP:
+		SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_NONE, NULL);
+		break;
+	}
+
+	ctx->context = ssl_ctx;
+
+	return true;
+}
+
+__hidden void
+uwsd_ssl_client_ctx_free(uwsd_ssl_client_t *ctx)
+{
+	SSL_CTX_free(ctx->context);
+
+	ctx->context = NULL;
 }
 
 __hidden bool
@@ -558,6 +646,10 @@ uwsd_ssl_accept(uwsd_client_context_t *cl)
 		return true;
 
 	case SSL_ERROR_WANT_READ:
+		errno = ENODATA;
+
+		return false;
+
 	case SSL_ERROR_WANT_WRITE:
 		errno = EAGAIN;
 
@@ -572,6 +664,81 @@ uwsd_ssl_accept(uwsd_client_context_t *cl)
 	default:
 		errno = EINVAL;
 		uwsd_ssl_err(cl, "SSL_accept(): %s", ssl_error());
+
+		return false;
+	}
+}
+
+__hidden bool
+uwsd_ssl_client_init(uwsd_client_context_t *cl)
+{
+	uwsd_ssl_client_t *ctx = cl->action->data.proxy.ssl;
+	SSL_CTX *tls_ctx;
+	SSL *ssl = NULL;
+
+	tls_ctx = ctx->context;
+
+	ssl = SSL_new(tls_ctx);
+
+	if (!ssl)
+		goto err;
+
+	SSL_set_fd(ssl, cl->upstream.ufd.fd);
+
+	cl->upstream.ssl = ssl;
+
+	return true;
+
+err:
+	SSL_free(ssl);
+
+	client_free(cl, "Unable to initialize TLS context: %s", ssl_error());
+
+	return false;
+}
+
+__hidden void
+uwsd_ssl_client_free(uwsd_client_context_t *cl)
+{
+	SSL *ssl = cl->upstream.ssl;
+
+	SSL_free(ssl);
+
+	cl->upstream.ssl = NULL;
+}
+
+__hidden bool
+uwsd_ssl_client_connect(uwsd_client_context_t *cl)
+{
+	SSL *ssl = cl->upstream.ssl;
+	int err;
+
+	errno = 0;
+	err = SSL_connect(ssl);
+
+	switch (SSL_get_error(ssl, err)) {
+	case SSL_ERROR_NONE:
+		return true;
+
+	case SSL_ERROR_WANT_READ:
+		errno = ENODATA;
+
+		return false;
+
+	case SSL_ERROR_WANT_WRITE:
+		errno = EAGAIN;
+
+		return false;
+
+	case SSL_ERROR_SYSCALL:
+		if (errno == 0)
+			errno = EPIPE;
+
+		return false;
+
+	default:
+		errno = EINVAL;
+		uwsd_ssl_err(cl, "SSL_connect(): %s", ssl_error());
 
 		return false;
 	}
@@ -634,6 +801,8 @@ uwsd_ssl_sendv(uwsd_connection_t *conn, struct iovec *iov, size_t len)
 	size_t i;
 	int err;
 
+	errno = 0;
+
 	for (i = 0; i < len; i++) {
 		if (iov[i].iov_len == 0)
 			continue;
@@ -649,19 +818,30 @@ uwsd_ssl_sendv(uwsd_connection_t *conn, struct iovec *iov, size_t len)
 
 		case SSL_ERROR_WANT_READ:
 		case SSL_ERROR_WANT_WRITE:
+			if (total)
+				return total;
+
 			errno = EAGAIN;
-			break;
+
+			return -1;
 
 		case SSL_ERROR_SYSCALL:
-			break;
+			if (total)
+				return total;
+
+			return -1;
 
 		default:
+			if (total)
+				return total;
+
 			errno = EINVAL;
-			break;
+
+			return -1;
 		}
 	}
 
-	return total ? total : -1;
+	return total;
 }
 
 __hidden ssize_t

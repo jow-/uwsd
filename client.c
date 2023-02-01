@@ -64,7 +64,7 @@ client_create(int fd, uwsd_listen_t *listen, struct sockaddr *peeraddr, size_t a
 	if (listen->ssl && !uwsd_ssl_init(cl))
 		return;
 
-	uwsd_state_init(cl, STATE_CONN_ACCEPT);
+	uwsd_state_init(cl, STATE_CONN_ACCEPT_RECV);
 }
 
 __hidden void
@@ -137,6 +137,15 @@ client_accept(uwsd_client_context_t *cl)
 {
 	if (cl->downstream.ssl)
 		return uwsd_ssl_accept(cl);
+
+	return true;
+}
+
+__hidden bool
+client_connect(uwsd_client_context_t *cl)
+{
+	if (cl->upstream.ssl)
+		return uwsd_ssl_client_connect(cl);
 
 	return true;
 }

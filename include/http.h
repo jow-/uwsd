@@ -143,6 +143,7 @@ __hidden void uwsd_http_state_response_send(uwsd_client_context_t *, uwsd_connec
 __hidden void uwsd_http_state_response_timeout(uwsd_client_context_t *, uwsd_connection_state_t, bool);
 
 __hidden void uwsd_http_state_upstream_connected(uwsd_client_context_t *, uwsd_connection_state_t, bool);
+__hidden void uwsd_http_state_upstream_handshake(uwsd_client_context_t *, uwsd_connection_state_t, bool);
 __hidden void uwsd_http_state_upstream_send(uwsd_client_context_t *, uwsd_connection_state_t, bool);
 __hidden void uwsd_http_state_upstream_recv(uwsd_client_context_t *, uwsd_connection_state_t, bool);
 __hidden void uwsd_http_state_upstream_timeout(uwsd_client_context_t *, uwsd_connection_state_t, bool);

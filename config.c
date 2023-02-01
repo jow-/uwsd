@@ -118,6 +118,9 @@ static void free_auth(void *obj);
 static bool validate_ssl(void *obj);
 static void free_ssl(void *obj);
 
+static bool validate_ssl_client(void *obj);
+static void free_ssl_client(void *obj);
+
 static void free_toplevel(void *obj);
 
 static const config_block_t ssl_spec = {
@@ -137,6 +140,25 @@ static const config_block_t ssl_spec = {
 			offsetof(uwsd_ssl_t, protocols), { 0 } },
 		{ "ciphers", STRING,
 			offsetof(uwsd_ssl_t, ciphers), { 0 } },
+		{ 0 }
+	}
+};
+
+static const config_block_t ssl_client_spec = {
+	.size = sizeof(uwsd_ssl_client_t),
+	.validate = validate_ssl_client,
+	.free = free_ssl_client,
+	.properties = {
+		{ "verify-server", ENUM,
+			offsetof(uwsd_ssl_client_t, verify_server), VALUES("strict", "loose", "skip") },
+		{ "private-key", STRING,
+			offsetof(uwsd_ssl_client_t, private_key), { 0 } },
+		{ "certificate", STRING,
+			offsetof(uwsd_ssl_client_t, certificate), { 0 } },
+		{ "protocols", LIST,
+			offsetof(uwsd_ssl_client_t, protocols), { 0 } },
+		{ "ciphers", STRING,
+			offsetof(uwsd_ssl_client_t, ciphers), { 0 } },
 		{ 0 }
 	}
 };
@@ -300,6 +322,8 @@ static const config_block_t proxy_tcp_spec = {
 			offsetof(uwsd_action_t, data.proxy.binary), { 0 } },
 		{ "subprotocol", STRING,
 			offsetof(uwsd_action_t, data.proxy.subprotocol), { 0 } },
+		{ "ssl", NESTED_SINGLE,
+			offsetof(uwsd_action_t, data.proxy.ssl), SUBSPEC(ssl_client_spec) },
 		{ 0 }
 	}
 };
@@ -1290,6 +1314,23 @@ free_ssl(void *obj)
 	uwsd_ssl_t *ssl = obj;
 
 	return uwsd_ssl_ctx_free(ssl);
+}
+
+
+static bool
+validate_ssl_client(void *obj)
+{
+	uwsd_ssl_client_t *ssl = obj;
+
+	return uwsd_ssl_client_ctx_init(ssl);
+}
+
+static void
+free_ssl_client(void *obj)
+{
+	uwsd_ssl_client_t *ssl = obj;
+
+	return uwsd_ssl_client_ctx_free(ssl);
 }
 
 

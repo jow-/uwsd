@@ -29,6 +29,12 @@ typedef enum {
 	UWSD_VERIFY_PEER_REQUIRED
 } uwsd_ssl_peer_verify_t;
 
+typedef enum {
+	UWSD_VERIFY_SERVER_STRICT,
+	UWSD_VERIFY_SERVER_LOOSE,
+	UWSD_VERIFY_SERVER_SKIP
+} uwsd_ssl_server_verify_t;
+
 typedef struct {
 	uwsd_ssl_peer_verify_t verify_peer;
 	char *private_key, *certificate, *certificate_directory;
@@ -39,12 +45,26 @@ typedef struct {
 	} contexts;
 } uwsd_ssl_t;
 
+typedef struct {
+	uwsd_ssl_server_verify_t verify_server;
+	char *private_key, *certificate;
+	char **protocols, *ciphers;
+	void *context;
+} uwsd_ssl_client_t;
+
 __hidden bool uwsd_ssl_ctx_init(uwsd_ssl_t *);
 __hidden void uwsd_ssl_ctx_free(uwsd_ssl_t *);
+
+__hidden bool uwsd_ssl_client_ctx_init(uwsd_ssl_client_t *);
+__hidden void uwsd_ssl_client_ctx_free(uwsd_ssl_client_t *);
 
 __hidden bool uwsd_ssl_init(uwsd_client_context_t *);
 __hidden void uwsd_ssl_free(uwsd_client_context_t *);
 __hidden bool uwsd_ssl_accept(uwsd_client_context_t *);
+
+__hidden bool uwsd_ssl_client_init(uwsd_client_context_t *);
+__hidden void uwsd_ssl_client_free(uwsd_client_context_t *);
+__hidden bool uwsd_ssl_client_connect(uwsd_client_context_t *);
 
 __hidden ssize_t uwsd_ssl_pending(uwsd_connection_t *);
 __hidden ssize_t uwsd_ssl_recv(uwsd_connection_t *, void *, size_t);

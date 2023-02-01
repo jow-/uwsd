@@ -1128,7 +1128,10 @@ http_proxy_connect(uwsd_client_context_t *cl)
 				"Unable to connect to upstream server: %m\n");
 	}
 
-	uwsd_state_transition(cl, STATE_CONN_UPSTREAM_CONNECT);
+	if (action->data.proxy.ssl && !uwsd_ssl_client_init(cl))
+		return false;
+
+	uwsd_state_transition(cl, STATE_CONN_UPSTREAM_HS_SEND);
 
 	return true;
 }
@@ -1418,8 +1421,11 @@ __hidden void
 uwsd_http_state_accept(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
 	if (!client_accept(cl)) {
+		if (errno == ENODATA)
+			return uwsd_state_transition(cl, STATE_CONN_ACCEPT_RECV); /* retry */
+
 		if (errno == EAGAIN)
-			return; /* retry */
+			return uwsd_state_transition(cl, STATE_CONN_ACCEPT_SEND); /* retry */
 
 		return client_free(cl, "SSL handshake error: %s", strerror(errno));
 	}
@@ -1640,6 +1646,25 @@ append_via_header(uwsd_connection_t *httpbuf, uwsd_client_context_t *cl, const c
 		uwsd_io_printf(httpbuf, ":%hu", port);
 
 	uwsd_io_printf(httpbuf, "\r\n");
+}
+
+__hidden void
+uwsd_http_state_upstream_handshake(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
+{
+	if (!client_connect(cl)) {
+		if (errno == ENODATA)
+			return uwsd_state_transition(cl, STATE_CONN_UPSTREAM_HS_RECV); /* retry */
+
+		if (errno == EAGAIN)
+			return uwsd_state_transition(cl, STATE_CONN_UPSTREAM_HS_SEND); /* retry */
+
+		uwsd_http_error_send(cl, 502, "Bad Gateway",
+			"SSL handshake with upstream server failed");
+
+		return; /* failure */
+	}
+
+	uwsd_state_transition(cl, STATE_CONN_UPSTREAM_CONNECT);
 }
 
 __hidden void

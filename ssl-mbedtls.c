@@ -53,6 +53,10 @@ typedef struct {
 } ssl_ctx_t;
 
 
+static mbedtls_x509_crt ca_certs = { 0 };
+static bool ca_certs_initialized = false;
+
+
 static char *
 ssl_error(int err)
 {
@@ -265,8 +269,57 @@ ssl_free_context(ssl_ctx_t *tls_ctx)
 	free(tls_ctx);
 }
 
+static void
+ssl_load_ca_certificates(const char *directory)
+{
+	char path[PATH_MAX];
+	struct dirent *e;
+	struct stat s;
+	char *ext;
+	DIR *dp;
+	int err;
+
+	if (ca_certs_initialized)
+		return;
+
+	mbedtls_x509_crt_init(&ca_certs);
+
+	dp = opendir(directory);
+
+	if (!dp)
+		return sys_perror("Unable to open certificate directory '%s'", directory);
+
+	while ((e = readdir(dp)) != NULL) {
+		ext = strrchr(e->d_name, '.');
+
+		if (!ext || strcmp(ext, ".crt"))
+			continue;
+
+		snprintf(path, sizeof(path), "%s/%s", directory, e->d_name);
+
+		if (stat(path, &s)) {
+			sys_perror("Unable to stat '%s'", path);
+			continue;
+		}
+
+		if (!S_ISREG(s.st_mode))
+			continue;
+
+		err = mbedtls_x509_crt_parse_file(&ca_certs, path);
+
+		if (err) {
+			ssl_perror(NULL, err, "Unable to parse X.509 certificate '%s'", path);
+			continue;
+		}
+	}
+
+	closedir(dp);
+
+	ca_certs_initialized = true;
+}
+
 static ssl_ctx_t *
-ssl_create_context(char *const *protocols, const char *ciphers)
+ssl_create_context(bool server, char *const *protocols, const char *ciphers)
 {
 	ssl_ctx_t *tls_ctx = NULL;
 
@@ -289,13 +342,20 @@ ssl_create_context(char *const *protocols, const char *ciphers)
 
 	mbedtls_ssl_config_init(&tls_ctx->conf);
 	mbedtls_ssl_config_defaults(&tls_ctx->conf,
-		MBEDTLS_SSL_IS_SERVER,
+		server ? MBEDTLS_SSL_IS_SERVER : MBEDTLS_SSL_IS_CLIENT,
 		MBEDTLS_SSL_TRANSPORT_STREAM,
 	    MBEDTLS_SSL_PRESET_DEFAULT);
 
 	mbedtls_ssl_conf_rng(&tls_ctx->conf, ssl_gather_entropy, NULL);
 
-	mbedtls_ssl_conf_authmode(&tls_ctx->conf, MBEDTLS_SSL_VERIFY_NONE);
+	if (server) {
+		mbedtls_ssl_conf_authmode(&tls_ctx->conf, MBEDTLS_SSL_VERIFY_NONE);
+	}
+	else {
+		ssl_load_ca_certificates("/etc/ssl/certs");
+		mbedtls_ssl_conf_ca_chain(&tls_ctx->conf, &ca_certs, NULL);
+		mbedtls_ssl_conf_authmode(&tls_ctx->conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
+	}
 
 	if (protocols && !ssl_parse_protocols(tls_ctx, protocols)) {
 		ssl_free_context(tls_ctx);
@@ -424,7 +484,7 @@ static bool
 ssl_create_context_from_pem(uwsd_ssl_t *ctx, FILE *pkey_fp, const char *pkey_path,
                                              FILE *cert_fp, const char *cert_path)
 {
-	ssl_ctx_t *ssl_ctx = ssl_create_context(ctx->protocols, ctx->ciphers);
+	ssl_ctx_t *ssl_ctx = ssl_create_context(true, ctx->protocols, ctx->ciphers);
 	int err;
 
 	if (!ssl_ctx)
@@ -573,6 +633,66 @@ uwsd_ssl_ctx_free(uwsd_ssl_t *ctx)
 	free(ctx->contexts.entries);
 }
 
+__hidden bool
+uwsd_ssl_client_ctx_init(uwsd_ssl_client_t *ctx)
+{
+	ssl_ctx_t *ssl_ctx = ssl_create_context(false, ctx->protocols, ctx->ciphers);
+	int err;
+
+	if (!ssl_ctx)
+		return false;
+
+	if (!!ctx->private_key ^ !!ctx->certificate) {
+		uwsd_ssl_err(NULL, "Require both 'private-key' and 'certificate' properties");
+
+		return false;
+	}
+
+	if (ctx->private_key && ctx->certificate) {
+		err = mbedtls_pk_parse_keyfile(&ssl_ctx->key, ctx->private_key, NULL);
+
+		if (err) {
+			ssl_perror(NULL, err, "Unable to load private key from PEM file '%s'", ctx->private_key);
+			ssl_free_context(ssl_ctx);
+
+			return false;
+		}
+
+		err = mbedtls_x509_crt_parse_file(&ssl_ctx->certs, ctx->certificate);
+
+		if (err) {
+			ssl_perror(NULL, err, "Unable to load certificates from from PEM file '%s'", ctx->certificate);
+			ssl_free_context(ssl_ctx);
+
+			return false;
+		}
+
+		mbedtls_ssl_conf_ca_chain(&ssl_ctx->conf, ssl_ctx->certs.next, NULL);
+
+		err = mbedtls_ssl_conf_own_cert(&ssl_ctx->conf, &ssl_ctx->certs, &ssl_ctx->key);
+
+		if (err) {
+			ssl_perror(NULL, err, "Unable to use certificate '%s' with key file '%s'", ctx->certificate, ctx->private_key);
+			ssl_free_context(ssl_ctx);
+
+			return false;
+		}
+	}
+
+	ctx->context = ssl_ctx;
+
+	return true;
+}
+
+__hidden void
+uwsd_ssl_client_ctx_free(uwsd_ssl_client_t *ctx)
+{
+	if (ctx->context)
+		ssl_free_context(ctx->context);
+
+	ctx->context = NULL;
+}
+
 static int
 ssl_lowlevel_send(void *ctx, const unsigned char *buf, size_t len)
 {
@@ -691,10 +811,9 @@ uwsd_ssl_free(uwsd_client_context_t *cl)
 	cl->downstream.ssl = NULL;
 }
 
-__hidden bool
-uwsd_ssl_accept(uwsd_client_context_t *cl)
+static bool
+ssl_handshake(uwsd_client_context_t *cl, mbedtls_ssl_context *ssl)
 {
-	mbedtls_ssl_context *ssl = cl->downstream.ssl;
 	int err;
 
 	errno = 0;
@@ -705,6 +824,10 @@ uwsd_ssl_accept(uwsd_client_context_t *cl)
 		return true;
 
 	case MBEDTLS_ERR_SSL_WANT_READ:
+		errno = ENODATA;
+
+		return false;
+
 	case MBEDTLS_ERR_SSL_WANT_WRITE:
 		errno = EAGAIN;
 
@@ -721,6 +844,111 @@ uwsd_ssl_accept(uwsd_client_context_t *cl)
 		mbedtls_ssl_session_reset(ssl);
 
 		return false;
+	}
+}
+
+__hidden bool
+uwsd_ssl_accept(uwsd_client_context_t *cl)
+{
+	return ssl_handshake(cl, cl->downstream.ssl);
+}
+
+__hidden bool
+uwsd_ssl_client_init(uwsd_client_context_t *cl)
+{
+	uwsd_ssl_client_t *ctx = cl->action->data.proxy.ssl;
+	mbedtls_ssl_context *ssl = NULL;
+	ssl_ctx_t *tls_ctx;
+	int err;
+
+	tls_ctx = ctx->context;
+	ssl = calloc(1, sizeof(*ssl));
+
+	if (!ssl) {
+		client_free(cl, "Unable to initialize TLS context: Out of memory");
+
+		return false;
+	}
+
+	mbedtls_ssl_init(ssl);
+
+	err = mbedtls_ssl_setup(ssl, &tls_ctx->conf);
+
+	if (err) {
+		client_free(cl, "Unable to setup TLS context: %s", ssl_error(err));
+
+		mbedtls_ssl_free(ssl);
+		free(ssl);
+
+		return false;
+	}
+
+	mbedtls_ssl_set_bio(ssl, &cl->upstream,
+		ssl_lowlevel_send, ssl_lowlevel_recv, NULL);
+
+	cl->upstream.ssl = ssl;
+
+	return true;
+}
+
+__hidden void
+uwsd_ssl_client_free(uwsd_client_context_t *cl)
+{
+	mbedtls_ssl_context *ssl = cl->upstream.ssl;
+
+	mbedtls_ssl_free(ssl);
+	free(ssl);
+
+	cl->upstream.ssl = NULL;
+}
+
+static bool
+ssl_connect_verify_result(uwsd_client_context_t *cl, uint32_t flags)
+{
+	char buf[512], *p;
+
+	if (flags == 0)
+		return true;
+
+	mbedtls_x509_crt_verify_info(buf, sizeof(buf), " ", flags);
+
+	for (p = buf; *p; p++)
+		if (*p == '\n')
+			*p = p[1] ? ',' : '\0';
+
+	uwsd_ssl_warn(cl, "Upstream handshake:%s", buf);
+
+	return false;
+}
+
+__hidden bool
+uwsd_ssl_client_connect(uwsd_client_context_t *cl)
+{
+	uwsd_ssl_client_t *ctx;
+	uint32_t res;
+
+	if (!ssl_handshake(cl, cl->upstream.ssl))
+		return false;
+
+	res = mbedtls_ssl_get_verify_result(cl->upstream.ssl);
+	ctx = cl->action ? cl->action->data.proxy.ssl : NULL;
+
+	switch (ctx ? ctx->verify_server : UWSD_VERIFY_SERVER_STRICT) {
+	case UWSD_VERIFY_SERVER_STRICT:
+		return ssl_connect_verify_result(cl, res);
+
+	case UWSD_VERIFY_SERVER_LOOSE:
+		return ssl_connect_verify_result(cl, res & ~(
+			MBEDTLS_X509_BADCERT_EXPIRED |
+			MBEDTLS_X509_BADCERT_FUTURE |
+			MBEDTLS_X509_BADCERT_NOT_TRUSTED |
+			MBEDTLS_X509_BADCRL_EXPIRED |
+			MBEDTLS_X509_BADCRL_FUTURE |
+			MBEDTLS_X509_BADCRL_NOT_TRUSTED
+		));
+
+	default:
+		return true;
 	}
 }
 
@@ -771,6 +999,8 @@ uwsd_ssl_sendv(uwsd_connection_t *conn, struct iovec *iov, size_t len)
 	size_t i;
 	int err;
 
+	errno = 0;
+
 	for (i = 0; i < len; i++) {
 		if (iov[i].iov_len == 0)
 			continue;
@@ -783,16 +1013,24 @@ uwsd_ssl_sendv(uwsd_connection_t *conn, struct iovec *iov, size_t len)
 		switch (err) {
 		case MBEDTLS_ERR_SSL_WANT_READ:
 		case MBEDTLS_ERR_SSL_WANT_WRITE:
+			if (total)
+				return total;
+
 			errno = EAGAIN;
-			break;
+
+			return -1;
 
 		default:
+			if (total)
+				return total;
+
 			errno = EINVAL;
-			break;
+
+			return -1;
 		}
 	}
 
-	return total ? total : -1;
+	return total;
 }
 
 __hidden ssize_t

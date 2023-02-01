@@ -26,11 +26,14 @@
 typedef struct uwsd_client_context uwsd_client_context_t;
 
 #define CONN_STATE_LIST			\
-	STATE(ACCEPT),				\
+	STATE(ACCEPT_SEND),			\
+	STATE(ACCEPT_RECV),			\
 	STATE(IDLE),				\
 	STATE(REQUEST),				\
 	STATE(RESPONSE),			\
 	STATE(UPSTREAM_CONNECT),	\
+	STATE(UPSTREAM_HS_SEND),	\
+	STATE(UPSTREAM_HS_RECV),	\
 	STATE(UPSTREAM_SEND),		\
 	STATE(UPSTREAM_RECV),		\
 	STATE(DOWNSTREAM_SEND),		\

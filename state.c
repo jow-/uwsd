@@ -26,7 +26,15 @@
 #include "config.h"
 
 static const uwsd_state_entry_t states[] = {
-	[STATE_CONN_ACCEPT] = {
+	[STATE_CONN_ACCEPT_SEND] = {
+		.channels   = CHANNEL_DOWNSTREAM,
+		.events     = EVENT_WRITABLE,
+		.io_cb      = uwsd_http_state_accept,
+		.timeout    = TIMEOUT_DOWNSTREAM_REQUEST,
+		.timeout_cb = uwsd_http_state_request_timeout
+	},
+
+	[STATE_CONN_ACCEPT_RECV] = {
 		.channels   = CHANNEL_DOWNSTREAM,
 		.events     = EVENT_READABLE,
 		.io_cb      = uwsd_http_state_accept,
@@ -56,6 +64,22 @@ static const uwsd_state_entry_t states[] = {
 		.io_cb      = uwsd_http_state_response_send,
 		.timeout    = TIMEOUT_DOWNSTREAM_TRANSFER,
 		.timeout_cb = uwsd_http_state_response_timeout
+	},
+
+	[STATE_CONN_UPSTREAM_HS_SEND] = {
+		.channels   = CHANNEL_UPSTREAM,
+		.events     = EVENT_WRITABLE,
+		.io_cb      = uwsd_http_state_upstream_handshake,
+		.timeout    = TIMEOUT_UPSTREAM_CONNECT,
+		.timeout_cb = uwsd_http_state_upstream_timeout
+	},
+
+	[STATE_CONN_UPSTREAM_HS_RECV] = {
+		.channels   = CHANNEL_UPSTREAM,
+		.events     = EVENT_READABLE,
+		.io_cb      = uwsd_http_state_upstream_handshake,
+		.timeout    = TIMEOUT_UPSTREAM_CONNECT,
+		.timeout_cb = uwsd_http_state_upstream_timeout
 	},
 
 	[STATE_CONN_UPSTREAM_CONNECT] = {

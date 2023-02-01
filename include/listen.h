@@ -81,6 +81,7 @@ typedef struct uwsd_action {
 			uint16_t port;
 			bool binary;
 			char *subprotocol;
+			uwsd_ssl_client_t *ssl;
 		} proxy;
 		struct uwsd_action *action;
 	} data;
