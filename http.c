@@ -1908,7 +1908,7 @@ append_host_header(uwsd_connection_t *httpbuf, uwsd_client_context_t *cl)
 	}
 
 	else {
-		if (cl->listener->hostname) {
+		if (cl->listener->hostname && !isdigit(*cl->listener->hostname) && !strchr(cl->listener->hostname, ':')) {
 			uwsd_io_printf(httpbuf, "%s", cl->listener->hostname);
 		}
 		else if (cl->sa_local.unspec.sa_family == AF_INET6) {
@@ -1936,7 +1936,7 @@ append_host_header(uwsd_connection_t *httpbuf, uwsd_client_context_t *cl)
 __hidden void
 uwsd_http_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
-	bool has_clen = false, has_ctype = false;
+	bool has_clen = false, has_ctype = false, is_script = (cl->action->type == UWSD_ACTION_SCRIPT);
 	uwsd_connection_t *httpbuf = &cl->downstream;
 	uwsd_http_header_t *hdr;
 	char *msg, *via = NULL;
@@ -1959,7 +1959,7 @@ uwsd_http_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 		return; /* await complete header */
 
 	if (!(cl->http.response_flags & (HTTP_SEND_PLAIN|HTTP_SEND_CHUNKED))) {
-		if (cl->action->type == UWSD_ACTION_SCRIPT) {
+		if (is_script) {
 			if (!status_header_parse(cl, &code, &msg)) {
 				uwsd_http_error_send(cl, 502, "Bad Gateway",
 					"The invoked program sent an invalid status header");
@@ -1999,7 +1999,7 @@ uwsd_http_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 			if (!strcasecmp(hdr->name, "Host"))
 				continue;
 
-			if (!strcasecmp(hdr->name, "Via")) {
+			if (!is_script && !strcasecmp(hdr->name, "Via")) {
 				via = hdr->value;
 				continue;
 			}
@@ -2023,7 +2023,8 @@ uwsd_http_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 			cl->http.response_flags |= HTTP_SEND_PLAIN;
 		}
 
-		append_via_header(httpbuf, cl, via);
+		if (!is_script)
+			append_via_header(httpbuf, cl, via);
 
 		if (!uwsd_io_printf(httpbuf, "\r\n")) {
 			uwsd_http_error_send(cl, 502,
