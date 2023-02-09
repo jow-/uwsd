@@ -1940,8 +1940,8 @@ uwsd_http_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 	uwsd_connection_t *httpbuf = &cl->downstream;
 	uwsd_http_header_t *hdr;
 	char *msg, *via = NULL;
+	bool chunked, eof;
 	uint16_t code;
-	bool chunked;
 	size_t i;
 
 	if (!uwsd_io_readahead(&cl->upstream))
@@ -1950,13 +1950,25 @@ uwsd_http_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 	if (!http_response_recv(cl))
 		return; /* failure */
 
+	/* The forced state transition below will clear the eof indicator,
+	 * read and store it here and evaluate after */
+	eof = cl->upstream.ufd.eof;
+
 	/* We might've been invoked by pending socket buffer data so far
 	 * without ever involving uloop. Force a state transition here to
 	 * trigger uloop registration for subsequent read notifications */
 	uwsd_state_transition(cl, state);
 
-	if (cl->http.state < STATE_HTTP_BODY_KNOWN_LENGTH)
+	if (cl->http.state < STATE_HTTP_BODY_KNOWN_LENGTH) {
+		if (eof) {
+			uwsd_http_error_send(cl, 502, "Bad Gateway",
+				"The invoked program did not produce a valid response");
+
+			return; /* failure */
+		}
+
 		return; /* await complete header */
+	}
 
 	if (!(cl->http.response_flags & (HTTP_SEND_PLAIN|HTTP_SEND_CHUNKED))) {
 		if (is_script) {
