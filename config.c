@@ -89,7 +89,6 @@ property_ptr(const config_prop_t *prop, void *base)
 
 static bool parse_backend(void *obj, const char *label);
 static bool validate_backend(void *obj);
-static void free_backend(void *obj);
 
 static bool parse_listen(void *obj, const char *label);
 static bool validate_listen(void *obj);
@@ -98,7 +97,6 @@ static void free_listen(void *obj);
 static bool parse_protocol_match(void *obj, const char *label);
 static bool parse_hostname_match(void *obj, const char *label);
 static bool parse_path_match(void *obj, const char *label);
-static void free_match(void *obj);
 
 static bool parse_serve_file(void *obj, const char *label);
 static bool parse_serve_directory(void *obj, const char *label);
@@ -113,7 +111,6 @@ static void free_action(void *obj);
 static bool parse_auth_basic(void *obj, const char *label);
 static bool parse_auth_mtls(void *obj, const char *label);
 static bool validate_auth(void *obj);
-static void free_auth(void *obj);
 
 static bool validate_ssl(void *obj);
 static void free_ssl(void *obj);
@@ -212,7 +209,6 @@ static const config_block_t backend_spec = {
 	.size = sizeof(uwsd_backend_t),
 	.init = parse_backend,
 	.validate = validate_backend,
-	.free = free_backend,
 	.properties = {
 		ACTION_PROPERTIES(uwsd_backend_t),
 		{ 0 }
@@ -222,7 +218,6 @@ static const config_block_t backend_spec = {
 static const config_block_t match_protocol_spec = {
 	.size = sizeof(uwsd_match_t),
 	.init = parse_protocol_match,
-	.free = free_match,
 	.properties = {
 		MATCH_PROPERTIES(uwsd_match_t),
 		ACTION_PROPERTIES(uwsd_match_t),
@@ -233,7 +228,6 @@ static const config_block_t match_protocol_spec = {
 static const config_block_t match_hostname_spec = {
 	.size = sizeof(uwsd_match_t),
 	.init = parse_hostname_match,
-	.free = free_match,
 	.properties = {
 		MATCH_PROPERTIES(uwsd_match_t),
 		ACTION_PROPERTIES(uwsd_match_t),
@@ -244,7 +238,6 @@ static const config_block_t match_hostname_spec = {
 static const config_block_t match_path_spec = {
 	.size = sizeof(uwsd_match_t),
 	.init = parse_path_match,
-	.free = free_match,
 	.properties = {
 		MATCH_PROPERTIES(uwsd_match_t),
 		ACTION_PROPERTIES(uwsd_match_t),
@@ -372,7 +365,6 @@ static const config_block_t auth_basic_spec = {
 	.size = sizeof(uwsd_auth_t),
 	.init = parse_auth_basic,
 	.validate = validate_auth,
-	.free = free_auth,
 	.properties = {
 		{ "username", STRING,
 			offsetof(uwsd_auth_t, data.basic.username), { 0 } },
@@ -388,7 +380,6 @@ static const config_block_t auth_mtls_spec = {
 	.size = sizeof(uwsd_auth_t),
 	.init = parse_auth_mtls,
 	.validate = validate_auth,
-	.free = free_auth,
 	.properties = {
 		{ "require-issuer", STRING,
 			offsetof(uwsd_auth_t, data.mtls.require_issuer), { 0 } },
@@ -1129,18 +1120,6 @@ free_action(void *obj)
 	}
 }
 
-static void
-free_match(void *obj)
-{
-	uwsd_match_t *match = obj;
-
-	switch (match->type) {
-	case UWSD_MATCH_PATH:     return free(match->data.value);
-	case UWSD_MATCH_HOSTNAME: return free(match->data.value);
-	default:                  break;
-	}
-}
-
 
 static bool
 parse_auth_basic(void *obj, const char *label)
@@ -1191,21 +1170,6 @@ validate_auth(void *obj)
 	return true;
 }
 
-static void
-free_auth(void *obj)
-{
-	uwsd_auth_t *auth = obj;
-
-	switch (auth->type) {
-	case UWSD_AUTH_BASIC:
-		free(auth->data.basic.realm);
-		break;
-
-	case UWSD_AUTH_MTLS:
-		break;
-	}
-}
-
 
 static bool
 parse_backend(void *obj, const char *label)
@@ -1237,14 +1201,6 @@ validate_backend(void *obj)
 			return parse_error("Name '%s' already used by another backend directive", backend->name);
 
 	return true;
-}
-
-static void
-free_backend(void *obj)
-{
-	uwsd_backend_t *backend = obj;
-
-	free(backend->name);
 }
 
 
