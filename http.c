@@ -991,9 +991,11 @@ __hidden size_t __attribute__((__format__ (__printf__, 6, 0)))
 uwsd_http_reply_buffer_varg(char *buf, size_t buflen, double http_version,
                             uint16_t code, const char *reason, const char *fmt, va_list ap)
 {
+	enum { BARE, LONG, LLONG, DOUBLE, LDBL, INTMAX, SIZET, PTRDIFF } expect;
 	char *pos = buf, *hname, *hvalue;
 	bool has_ctype = false;
 	int len, clen;
+	const char *p;
 	va_list ap1;
 
 	len = snprintf(pos, buflen, "HTTP/%.1f %hu %s\r\n", http_version, code, reason);
@@ -1001,8 +1003,109 @@ uwsd_http_reply_buffer_varg(char *buf, size_t buflen, double http_version,
 	buflen -= len;
 
 	va_copy(ap1, ap);
-
 	clen = (*fmt != '\127') ? vsnprintf(NULL, 0, fmt, ap1) : 0;
+	va_end(ap1);
+
+	va_copy(ap1, ap);
+
+	/* Skip necessary amount of arguments by doing a naive parsing of the
+	 * format string. Bail out on formats we do not understand. */
+	for (p = fmt; *p; p++) {
+		if (*p != '%')
+			continue;
+
+		p++;
+		expect = BARE;
+
+		/* skip flags */
+		while (strchr("#0- +'I", *p))
+			p++;
+
+		/* width given in argument */
+		if (*p == '*') {
+			p++;
+			va_arg(ap1, int);
+
+			/* we do not handle argument positions */
+			assert(!strchr("0123456789", *p));
+		}
+
+		/* skip width */
+		else {
+			while (strchr("0123456789", *p))
+				p++;
+		}
+
+		/* precision */
+		if (*p == '.') {
+			p++;
+
+			/* precision given in argument */
+			if (*p == '*') {
+				p++;
+				va_arg(ap1, int);
+
+				/* we do not handle argument positions */
+				assert(!strchr("0123456789", *p));
+			}
+
+			/* skip precision */
+			else {
+				while (strchr("0123456789", *p))
+					p++;
+			}
+		}
+
+		/* length */
+		switch (*p) {
+		case 'h': p += (p[1] == 'h') ? 2 : 1;                   break;
+		case 'l': p += (p[1] == 'l') ? 2 : 1; expect = LLONG;   break;
+		case 'q': p++;                        expect = LLONG;   break;
+		case 'L': p++;                        expect = LDBL;    break;
+		case 'j': p++;                        expect = INTMAX;  break;
+		case 'z': p++;                        expect = SIZET;   break;
+		case 't': p++;                        expect = PTRDIFF; break;
+		}
+
+		if (strchr("diouxX", *p)) {
+			switch (expect) {
+			case BARE:    va_arg(ap1, int);         break;
+			case LONG:    va_arg(ap1, long);        break;
+			case LLONG:   va_arg(ap1, long long);   break;
+			case INTMAX:  va_arg(ap1, intmax_t);    break;
+			case SIZET:   va_arg(ap1, size_t);      break;
+			case PTRDIFF: va_arg(ap1, ptrdiff_t);   break;
+			default:      assert(0);                break;
+			}
+		}
+		else if (strchr("eEfFgGaA", *p)) {
+			switch (expect) {
+			case BARE:    va_arg(ap1, double);      break;
+			case LDBL:    va_arg(ap1, long double); break;
+			default:      assert(0);                break;
+			}
+		}
+		else if (strchr("sSpn", *p)) {
+			switch (expect) {
+			case BARE:
+			case LONG:    va_arg(ap1, char *);      break;
+			default:      assert(0);                break;
+			}
+		}
+		else if (strchr("cC", *p)) {
+			switch (expect) {
+			case BARE:
+			case LONG:    va_arg(ap1, int);         break;
+			default:      assert(0);                break;
+			}
+		}
+		else if (strchr("%m", *p)) {
+			continue;
+		}
+		else {
+			assert(0);
+		}
+	}
 
 	while (true) {
 		hname = va_arg(ap1, char *);
