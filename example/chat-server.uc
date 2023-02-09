@@ -22,7 +22,7 @@ function unicast(conn, msg) {
 }
 
 function broadcast(msg) {
-	for (let client in connections())
+	for (let client in uwsd.connections())
 		unicast(client, msg);
 }
 
@@ -128,7 +128,7 @@ export function onData(connection, msg)
 		}
 
 		// Check for nickname uniqueness
-		for (let conn in connections()) {
+		for (let conn in uwsd.connections()) {
 			if (conn != connection) {
 				if (conn.data()?.nickname == msg.value) {
 					return unicast(connection, {
@@ -167,7 +167,7 @@ export function onData(connection, msg)
 		// Send back to requesting client
 		unicast(connection, {
 			type: 'client-list',
-			clients: map(connections(), cctx => cctx.data())
+			clients: map(uwsd.connections(), cctx => cctx.data())
 		});
 		break;
 

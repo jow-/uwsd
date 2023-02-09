@@ -144,7 +144,7 @@ export function onRequest(request, method, uri)
 		cgi_env[`HTTP_${uc(replace(hdrname, /\W+/g, '_'))}`] = hdrvalue;
 
 	// Spawn script process
-	let proc = spawn(script.path, [ script.path ], cgi_env);
+	let proc = uwsd.spawn(script.path, [ script.path ], cgi_env);
 
 	// Store process handle in the request context
 	request.data(proc);

@@ -1377,12 +1377,6 @@ uc_script_spawn(uc_vm_t *vm, size_t nargs)
 	}
 }
 
-static const uc_function_list_t global_fns[] = {
-	{ "connections", uc_script_connections },
-	{ "sha1digest",  uc_script_sha1digest },
-	{ "spawn",       uc_script_spawn },
-};
-
 
 /* -- Scripting host implementation -------------------- */
 
@@ -1746,6 +1740,21 @@ handle_stderr(struct uloop_fd *ufd, unsigned int events)
 	handle_stdio(action, ufd->fd, UWSD_PRIO_WARN);
 }
 
+static void
+uc_script_api_init(uc_vm_t *vm)
+{
+	uc_value_t *api;
+
+	/* build uwsd api table */
+	api = ucv_object_new(vm);
+
+	ucv_object_add(api, "connections", ucv_cfunction_new("connections", uc_script_connections));
+	ucv_object_add(api, "sha1digest", ucv_cfunction_new("sha1digest", uc_script_sha1digest));
+	ucv_object_add(api, "spawn", ucv_cfunction_new("spawn", uc_script_spawn));
+
+	ucv_object_add(uc_vm_scope_get(vm), "uwsd", api);
+}
+
 static int
 script_context_run(const char *sockpath, const char *scriptpath)
 {
@@ -1776,7 +1785,7 @@ script_context_run(const char *sockpath, const char *scriptpath)
 	uc_vm_exception_handler_set(&ctx.vm, handle_exception);
 	uc_stdlib_load(uc_vm_scope_get(&ctx.vm));
 
-	uc_function_list_register(uc_vm_scope_get(&ctx.vm), global_fns);
+	uc_script_api_init(&ctx.vm);
 
 	rc = uc_vm_execute(&ctx.vm, prog, &result);
 
