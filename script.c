@@ -264,7 +264,7 @@ ws_error_send(script_connection_t *conn, bool terminate, uint16_t code, const ch
 	len += vsnprintf((char *)conn->buf.data + len, 124, msg, ap);
 	va_end(ap);
 
-	ws_frame_send(conn, OPCODE_CLOSE, conn->buf.data, len);
+	ws_frame_send(conn, OPCODE_CLOSE, conn->buf.data, size_t_min(len, 125));
 
 	if (terminate)
 		script_conn_close(conn, ntohs(code), (char *)conn->buf.data + 2);
@@ -1758,10 +1758,11 @@ uc_script_api_init(uc_vm_t *vm)
 static int
 script_context_run(const char *sockpath, const char *scriptpath)
 {
+	script_connection_t *conn, *tmp;
 	script_context_t ctx = { 0 };
+	uc_value_t *result, *exctx;
 	uc_source_t *source;
 	uc_program_t *prog;
-	uc_value_t *result;
 	char *script, *err;
 	int len, rc;
 
@@ -1823,6 +1824,39 @@ script_context_run(const char *sockpath, const char *scriptpath)
 	uloop_init();
 	uloop_fd_add(&ctx.ufd, ULOOP_READ);
 	uloop_run();
+
+	if (ctx.vm.exception.type != EXCEPTION_NONE) {
+		/* Report exception once, then format error message and clear exception */
+		uc_vm_exception_handler_get(&ctx.vm)(&ctx.vm, &ctx.vm.exception);
+
+		exctx = ucv_object_get(ucv_array_get(ctx.vm.exception.stacktrace, 0), "context", NULL);
+
+		xasprintf(&err, "%s\n%s",
+			ctx.vm.exception.message,
+			ucv_string_get(exctx));
+
+		ctx.vm.exception.type = EXCEPTION_NONE;
+
+		list_for_each_entry_safe(conn, tmp, &requests, list) {
+			if (conn->proto == UWSD_PROTOCOL_WS) {
+				ws_error_send(conn, false, STATUS_INTERNAL_ERROR,
+					"Unhandled runtime error: %.*s", (int)strcspn(err, "\n"), err);
+			}
+			else {
+				http_reply_send(conn,
+					500, "Internal Server Error",
+					"Unhandled runtime error: %s",
+						err,
+					"Connection", "close",
+					UWSD_HTTP_REPLY_EOH
+				);
+			}
+
+			script_conn_close(conn, STATUS_INTERNAL_ERROR, err);
+		}
+
+		free(err);
+	}
 
 	return 0;
 }
