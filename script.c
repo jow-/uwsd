@@ -914,7 +914,7 @@ uc_script_reply(uc_vm_t *vm, size_t nargs)
 	bool found;
 	char *p;
 
-	if (!conn || !*conn || (*conn)->proto != UWSD_PROTOCOL_HTTP)
+	if (!conn || !*conn || ((*conn)->proto == UWSD_PROTOCOL_WS && (*conn)->subproto != NULL))
 		return NULL;
 
 	v = ucv_object_get(header, "Status", NULL);
