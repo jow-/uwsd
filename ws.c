@@ -551,6 +551,8 @@ uwsd_ws_state_upstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t s
 __hidden void
 uwsd_ws_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
+	bool done;
+
 	if (!uwsd_io_readahead(&cl->upstream))
 		return; /* error */
 
@@ -562,16 +564,22 @@ uwsd_ws_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t s
 		uwsd_iov_put(cl, uwsd_io_getpos(&cl->upstream), uwsd_io_pending(&cl->upstream));
 		uwsd_io_consume(&cl->upstream, uwsd_io_pending(&cl->upstream));
 
-		ws_downstream_tx_iov(cl);
+		done = ws_downstream_tx_iov(cl);
 	}
 	else {
 		if (!uwsd_io_pending(&cl->upstream))
 			return uwsd_ws_connection_close(cl, STATUS_GOING_AWAY, "Upstream closed connection");
 
-		ws_downstream_tx(cl,
+		done = ws_downstream_tx(cl,
 			cl->action->data.proxy.binary ? OPCODE_BINARY : OPCODE_TEXT,
 			true, uwsd_io_getpos(&cl->upstream), uwsd_io_pending(&cl->upstream));
 	}
+
+	if (!done)
+		return; /* partial write, connection closure or error */
+
+	/* reset IO timeouts */
+	uwsd_state_transition(cl, STATE_CONN_WS_IDLE);
 }
 
 __hidden void
