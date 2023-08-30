@@ -149,7 +149,7 @@ ws_downstream_rx(uwsd_client_context_t *cl)
 		uwsd_io_getpos(conn),
 		size_t_min(cl->ws.len - cl->ws.buflen, uwsd_io_pending(conn)));
 
-	while (true) {
+	while (cl->ws.state != STATE_WS_COMPLETE) {
 		ch = uwsd_io_getc(&cl->downstream);
 
 		if (ch == EOF)
@@ -239,7 +239,8 @@ ws_downstream_rx(uwsd_client_context_t *cl)
 			break;
 
 		default:
-			return true;
+			assert(0);
+			break;
 		}
 	}
 
@@ -476,7 +477,7 @@ ws_handle_frame_payload(uwsd_client_context_t *cl)
 	default:
 		if (cl->action->type == UWSD_ACTION_SCRIPT) {
 			if (!uwsd_script_send(cl, cl->tx[0].iov_base, cl->tx[0].iov_len))
-				return false;
+				return false; // XXX: switch to upstream TX mode on partial write
 
 			cl->tx[0].iov_base += cl->tx[0].iov_len;
 			cl->tx[0].iov_len = 0;
@@ -484,7 +485,7 @@ ws_handle_frame_payload(uwsd_client_context_t *cl)
 			return true;
 		}
 
-		return uwsd_iov_tx(&cl->upstream, cl->state);
+		return uwsd_iov_tx(&cl->upstream, STATE_CONN_WS_UPSTREAM_SEND);
 	}
 }
 
@@ -513,43 +514,18 @@ ws_handle_frame_completion(uwsd_client_context_t *cl, void *data, size_t len)
 	}
 }
 
-__hidden void
-uwsd_ws_state_upstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
+static void
+uwsd_ws_state_upstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t state)
 {
-	if (!ws_handle_frame_payload(cl))
-		return; /* error */
+	if (!uwsd_iov_tx(&cl->upstream, STATE_CONN_WS_UPSTREAM_SEND))
+		return; /* partial write, connection closure or error */
 
-	switch (cl->ws.state) {
-	case STATE_WS_PAYLOAD:
-		return uwsd_state_transition(cl, STATE_CONN_WS_DOWNSTREAM_RECV);
-
-	case STATE_WS_COMPLETE:
-		if (!ws_handle_frame_completion(cl, cl->ws.buf.data, cl->ws.buflen))
-			return; /* error or delayed send */
-
-		/* XXX: more buffered data, extract next frame */
-		ws_state_transition(cl, STATE_WS_HEADER);
-
-		/* rx buffer exhausted, await more data */
-		if (!uwsd_io_pending(&cl->downstream))
-			return uwsd_state_transition(cl, STATE_CONN_WS_IDLE);
-
-		if (!ws_downstream_rx(cl))
-			return; /* invalid */
-
-		if (cl->ws.state < STATE_WS_PAYLOAD)
-			return uwsd_state_transition(cl, STATE_CONN_WS_DOWNSTREAM_RECV); /* need more data */
-
-		break;
-
-	default:
-		return ws_terminate(cl, STATUS_INTERNAL_ERROR,
-			"Unexpected WebSocket state: %s", ws_state_name(cl->ws.state));
-	}
+	uwsd_io_flush(&cl->upstream);
+	uwsd_state_transition(cl, STATE_CONN_WS_IDLE);
 }
 
-__hidden void
-uwsd_ws_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
+static void
+uwsd_ws_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t state)
 {
 	bool done;
 
@@ -582,41 +558,48 @@ uwsd_ws_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t s
 	uwsd_state_transition(cl, STATE_CONN_WS_IDLE);
 }
 
-__hidden void
-uwsd_ws_state_upstream_timeout(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
-{
-	uwsd_ws_connection_close(cl, STATUS_CONNECTION_CLOSING, "Upstream connection timeout");
-}
-
-__hidden void
-uwsd_ws_state_downstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
+static void
+uwsd_ws_state_downstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t state)
 {
 	if (!ws_downstream_tx_iov(cl))
 		return; /* partial write, connection closure or error */
 
-	//ws_state_transition(cl, STATE_WS_HEADER);
+	uwsd_io_flush(&cl->downstream);
 	uwsd_state_transition(cl, STATE_CONN_WS_IDLE);
 }
 
-__hidden void
-uwsd_ws_state_downstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
+static void
+uwsd_ws_state_downstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t state)
 {
+	size_t len;
+
 	if (!uwsd_io_readahead(&cl->downstream))
 		return; /* failure */
 
-	if (!ws_downstream_rx(cl))
-		return; /* failure */
+	while (uwsd_io_pending(&cl->downstream)) {
+		if (!ws_downstream_rx(cl))
+			return; /* failure */
 
-	if (cl->ws.state < STATE_WS_PAYLOAD)
-		return; /* need more data */
+		if (cl->ws.state < STATE_WS_PAYLOAD)
+			return; /* await more data */
 
-	uwsd_state_transition(cl, STATE_CONN_WS_UPSTREAM_SEND);
-}
+		if (cl->ws.state == STATE_WS_PAYLOAD) {
+			if (!ws_handle_frame_payload(cl))
+				return; /* partial send or error */
+		}
 
-__hidden void
-uwsd_ws_state_downstream_timeout(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
-{
-	ws_terminate(cl, STATUS_TERMINATED, "Peer connection timeout");
+		if (cl->ws.state == STATE_WS_COMPLETE) {
+			len = cl->ws.buflen;
+
+			ws_state_transition(cl, STATE_WS_HEADER); /* expect next frame */
+
+			if (!ws_handle_frame_payload(cl))
+				return; /* partial send or error */
+
+			if (!ws_handle_frame_completion(cl, cl->ws.buf.data, len))
+				return; /* partial send or error */
+		}
+	}
 }
 
 __hidden bool
@@ -656,9 +639,18 @@ __hidden void
 uwsd_ws_state_xstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
 	if (upstream)
-		uwsd_ws_state_upstream_recv(cl, state, upstream);
+		uwsd_ws_state_upstream_recv(cl, state);
 	else
-		uwsd_ws_state_downstream_recv(cl, state, upstream);
+		uwsd_ws_state_downstream_recv(cl, state);
+}
+
+__hidden void
+uwsd_ws_state_xstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
+{
+	if (upstream)
+		uwsd_ws_state_upstream_send(cl, state);
+	else
+		uwsd_ws_state_downstream_send(cl, state);
 }
 
 __hidden void

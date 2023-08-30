@@ -41,8 +41,7 @@ typedef struct uwsd_client_context uwsd_client_context_t;
 	STATE(WS_IDLE),				\
 	STATE(WS_UPSTREAM_CONNECT),	\
 	STATE(WS_UPSTREAM_SEND),	\
-	STATE(WS_DOWNSTREAM_SEND),	\
-	STATE(WS_DOWNSTREAM_RECV)
+	STATE(WS_DOWNSTREAM_SEND)
 
 typedef enum uwsd_connection_state {
 #define STATE(name) STATE_CONN_##name

@@ -90,14 +90,8 @@ __hidden bool uwsd_ws_connection_accept(uwsd_client_context_t *);
 __hidden void uwsd_ws_connection_close(uwsd_client_context_t *, uint16_t, const char *, ...);
 
 __hidden void uwsd_ws_state_upstream_connected(uwsd_client_context_t *, uwsd_connection_state_t, bool);
-__hidden void uwsd_ws_state_upstream_send(uwsd_client_context_t *, uwsd_connection_state_t, bool);
-__hidden void uwsd_ws_state_upstream_recv(uwsd_client_context_t *, uwsd_connection_state_t, bool);
-__hidden void uwsd_ws_state_upstream_timeout(uwsd_client_context_t *, uwsd_connection_state_t, bool);
 
-__hidden void uwsd_ws_state_downstream_send(uwsd_client_context_t *, uwsd_connection_state_t, bool);
-__hidden void uwsd_ws_state_downstream_recv(uwsd_client_context_t *, uwsd_connection_state_t, bool);
-__hidden void uwsd_ws_state_downstream_timeout(uwsd_client_context_t *, uwsd_connection_state_t, bool);
-
+__hidden void uwsd_ws_state_xstream_send(uwsd_client_context_t *, uwsd_connection_state_t, bool);
 __hidden void uwsd_ws_state_xstream_recv(uwsd_client_context_t *, uwsd_connection_state_t, bool);
 __hidden void uwsd_ws_state_xstream_timeout(uwsd_client_context_t *, uwsd_connection_state_t, bool);
 

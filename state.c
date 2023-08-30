@@ -133,31 +133,22 @@ static const uwsd_state_entry_t states[] = {
 		.events     = EVENT_WRITABLE,
 		.io_cb      = uwsd_ws_state_upstream_connected,
 		.timeout    = TIMEOUT_UPSTREAM_CONNECT,
-		.timeout_cb = uwsd_ws_state_upstream_timeout
+		.timeout_cb = uwsd_ws_state_xstream_timeout
 	},
-
 	[STATE_CONN_WS_UPSTREAM_SEND] = {
 		.channels   = CHANNEL_UPSTREAM,
 		.events     = EVENT_WRITABLE,
-		.io_cb      = uwsd_ws_state_upstream_send,
+		.io_cb      = uwsd_ws_state_xstream_send,
 		.timeout    = TIMEOUT_UPSTREAM_TRANSFER,
-		.timeout_cb = uwsd_ws_state_upstream_timeout
+		.timeout_cb = uwsd_ws_state_xstream_timeout
 	},
-
 	[STATE_CONN_WS_DOWNSTREAM_SEND] = {
 		.channels   = CHANNEL_DOWNSTREAM,
 		.events     = EVENT_WRITABLE,
-		.io_cb      = uwsd_ws_state_downstream_send,
-		.timeout    = TIMEOUT_UPSTREAM_TRANSFER,
-		.timeout_cb = uwsd_ws_state_downstream_timeout
+		.io_cb      = uwsd_ws_state_xstream_send,
+		.timeout    = TIMEOUT_DOWNSTREAM_TRANSFER,
+		.timeout_cb = uwsd_ws_state_xstream_timeout
 	},
-	[STATE_CONN_WS_DOWNSTREAM_RECV] = {
-		.channels   = CHANNEL_DOWNSTREAM,
-		.events     = EVENT_READABLE,
-		.io_cb      = uwsd_ws_state_downstream_recv,
-		.timeout    = TIMEOUT_UPSTREAM_TRANSFER,
-		.timeout_cb = uwsd_ws_state_downstream_timeout
-	}
 };
 
 #ifndef NDEBUG
