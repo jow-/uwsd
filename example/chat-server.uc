@@ -32,7 +32,7 @@ function broadcast_status() {
 
 	broadcast({
 		type: 'server-status',
-		msg: `The time is now ${ts}, there are ${length(connections())} clients connected`
+		msg: `The time is now ${ts}, there are ${length(uwsd.connections())} clients connected`
 	});
 
 	timer(status_interval, broadcast_status);
