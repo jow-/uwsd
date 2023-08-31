@@ -158,7 +158,11 @@ main(int argc, char **argv)
 		fatal("No listener defined in configuration, aborting");
 
 	uloop_run();
+
+	uwsd_log_info(NULL, "Server is shutting down");
+
 	client_free_all();
+	uwsd_config_free();
 
 	return 0;
 }

@@ -42,5 +42,6 @@ typedef struct {
 extern uwsd_config_t *config;
 
 __hidden bool uwsd_config_parse(const char *);
+__hidden void uwsd_config_free(void);
 
 #endif /* UWSD_CONFIG_H */

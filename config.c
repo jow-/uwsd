@@ -1404,3 +1404,9 @@ error:
 
 	return false;
 }
+
+__hidden void
+uwsd_config_free(void)
+{
+	config_free_object(&toplevel_spec, config);
+}
