@@ -1986,7 +1986,7 @@ uwsd_script_init(uwsd_action_t *action, const char *path)
 
 
 static size_t
-push_tlv(struct iovec **iov, uint16_t *type, uint16_t *len, const void *data)
+push_tlv(struct iovec **iov, volatile uint16_t *type, volatile uint16_t *len, const void *data)
 {
 	(*iov)->iov_base = (void *)type;
 	(*iov)->iov_len = sizeof(*type);
@@ -2003,7 +2003,7 @@ push_tlv(struct iovec **iov, uint16_t *type, uint16_t *len, const void *data)
 }
 
 #define static_tlv(_iovp, _type, _len, _data) \
-	push_tlv(_iovp, &((uint16_t){ htons(_type) }), &((uint16_t){ htons(_len) }), _data)
+	push_tlv(_iovp, &((volatile uint16_t){ htons(_type) }), &((volatile uint16_t){ htons(_len) }), _data)
 
 #define single_tlv(_iov, _type, _len, _data) \
 	static_tlv(&((struct iovec *){ _iov }), _type, _len, _data)
