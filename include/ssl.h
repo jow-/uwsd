@@ -37,7 +37,7 @@ typedef enum {
 
 typedef struct {
 	uwsd_ssl_peer_verify_t verify_peer;
-	char *private_key, *certificate, *certificate_directory;
+	char *private_key, **certificates, *certificate_directory;
 	char **protocols, *ciphers;
 	struct {
 		void **entries;
@@ -47,7 +47,7 @@ typedef struct {
 
 typedef struct {
 	uwsd_ssl_server_verify_t verify_server;
-	char *private_key, *certificate;
+	char *private_key, **certificates;
 	char **protocols, *ciphers;
 	void *context;
 } uwsd_ssl_client_t;
