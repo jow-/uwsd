@@ -277,10 +277,30 @@ ssl_load_pem_privkey(SSL_CTX *ssl_ctx, FILE *fp, const char *path)
 }
 
 static bool
-ssl_load_pem_certificates(SSL_CTX *ssl_ctx, FILE *fp, const char *path)
+ssl_load_pem_certificate_chain(SSL_CTX *ssl_ctx, FILE *fp, const char *path)
 {
-	X509 *cert, *other;
 	X509_STORE *store;
+	X509 *other;
+
+	store = SSL_CTX_get_cert_store(ssl_ctx);
+
+	while ((other = PEM_read_X509(fp, NULL, password_cb, NULL)) != NULL) {
+		if (SSL_CTX_add0_chain_cert(ssl_ctx, other)) {
+			X509_STORE_add_cert(store, other);
+		}
+		else {
+			ssl_perror("Unable to use additional CA certificate from PEM file '%s'", path);
+			X509_free(other);
+		}
+	}
+
+	return true;
+}
+
+static bool
+ssl_load_pem_certificate(SSL_CTX *ssl_ctx, FILE *fp, const char *path)
+{
+	X509 *cert;
 
 	rewind(fp);
 
@@ -299,16 +319,38 @@ ssl_load_pem_certificates(SSL_CTX *ssl_ctx, FILE *fp, const char *path)
 		return false;
 	}
 
-	store = SSL_CTX_get_cert_store(ssl_ctx);
+	return ssl_load_pem_certificate_chain(ssl_ctx, fp, path);
+}
 
-	while ((other = PEM_read_X509(fp, NULL, password_cb, NULL)) != NULL) {
-		if (SSL_CTX_add0_chain_cert(ssl_ctx, other)) {
-			X509_STORE_add_cert(store, other);
+static bool
+ssl_load_pem_files(SSL_CTX *ssl_ctx, FILE *pkey_fp, const char *pkey_path,
+                                     FILE *cert_fp, const char *cert_path,
+                                     char *const *extra_certs)
+{
+	FILE *extra_fp;
+
+	if (!ssl_load_pem_privkey(ssl_ctx, pkey_fp, pkey_path) ||
+	    !ssl_load_pem_certificate(ssl_ctx, cert_fp, cert_path)) {
+
+		SSL_CTX_free(ssl_ctx);
+
+		return false;
+	}
+
+	while (*extra_certs) {
+		extra_fp = fopen(*extra_certs, "r");
+
+		if (!extra_fp) {
+			uwsd_ssl_err(NULL, "Unable to open certificate chain file '%s': %m", *extra_certs);
+			SSL_CTX_free(ssl_ctx);
+
+			return false;
 		}
-		else {
-			ssl_perror("Unable to use additional certificate from PEM file '%s'", path);
-			X509_free(other);
-		}
+
+		ssl_load_pem_certificate_chain(ssl_ctx, extra_fp, *extra_certs);
+		fclose(extra_fp);
+
+		extra_certs++;
 	}
 
 	return true;
@@ -316,7 +358,8 @@ ssl_load_pem_certificates(SSL_CTX *ssl_ctx, FILE *fp, const char *path)
 
 static bool
 ssl_create_context_from_pem(uwsd_ssl_t *ctx, FILE *pkey_fp, const char *pkey_path,
-                                             FILE *cert_fp, const char *cert_path)
+                                             FILE *cert_fp, const char *cert_path,
+                                             char *const *extra_certs)
 {
 	SSL_CTX *ssl_ctx = ssl_create_context(ctx->protocols, ctx->ciphers);
 	X509_NAME *n, *i;
@@ -324,13 +367,9 @@ ssl_create_context_from_pem(uwsd_ssl_t *ctx, FILE *pkey_fp, const char *pkey_pat
 	if (!ssl_ctx)
 		return false;
 
-	if (!ssl_load_pem_privkey(ssl_ctx, pkey_fp, pkey_path) ||
-	    !ssl_load_pem_certificates(ssl_ctx, cert_fp, cert_path)) {
-
-		SSL_CTX_free(ssl_ctx);
-
+	if (!ssl_load_pem_files(ssl_ctx, pkey_fp, pkey_path,
+	                                 cert_fp, cert_path, extra_certs))
 		return false;
-	}
 
 	n = X509_get_subject_name(SSL_CTX_get0_certificate(ssl_ctx));
 	i = X509_get_issuer_name(SSL_CTX_get0_certificate(ssl_ctx));
@@ -383,7 +422,7 @@ ssl_load_certificates(uwsd_ssl_t *ctx, const char *directory)
 			continue;
 		}
 
-		ssl_create_context_from_pem(ctx, fp, path, fp, path);
+		ssl_create_context_from_pem(ctx, fp, path, fp, path, NULL);
 
 		fclose(fp);
 	}
@@ -445,13 +484,13 @@ uwsd_ssl_ctx_init(uwsd_ssl_t *ctx)
 	if (ctx->certificate_directory)
 		ssl_load_certificates(ctx, ctx->certificate_directory);
 
-	if (!!ctx->private_key ^ !!ctx->certificate) {
+	if (!!ctx->private_key ^ !!ctx->certificates) {
 		uwsd_ssl_err(NULL, "Require both 'private-key' and 'certificate' properties");
 
 		return false;
 	}
 
-	if (ctx->private_key && ctx->certificate) {
+	if (ctx->private_key && ctx->certificates) {
 		pkey_fp = fopen(ctx->private_key, "r");
 
 		if (!pkey_fp) {
@@ -460,16 +499,18 @@ uwsd_ssl_ctx_init(uwsd_ssl_t *ctx)
 			return false;
 		}
 
-		cert_fp = fopen(ctx->certificate, "r");
+		cert_fp = fopen(ctx->certificates[0], "r");
 
 		if (!cert_fp) {
-			uwsd_ssl_err(NULL, "Unable to open certificate file '%s': %m", ctx->certificate);
+			uwsd_ssl_err(NULL, "Unable to open certificate file '%s': %m", ctx->certificates[0]);
 			fclose(pkey_fp);
 
 			return false;
 		}
 
-		ssl_create_context_from_pem(ctx, pkey_fp, ctx->private_key, cert_fp, ctx->certificate);
+		ssl_create_context_from_pem(ctx, pkey_fp, ctx->private_key,
+		                                 cert_fp, ctx->certificates[0],
+		                                 ctx->certificates + 1);
 
 		fclose(pkey_fp);
 		fclose(cert_fp);
@@ -498,17 +539,18 @@ uwsd_ssl_client_ctx_init(uwsd_ssl_client_t *ctx)
 {
 	SSL_CTX *ssl_ctx = ssl_create_context(ctx->protocols, ctx->ciphers);
 	FILE *pkey_fp, *cert_fp;
+	bool success;
 
 	if (!ssl_ctx)
 		return false;
 
-	if (!!ctx->private_key ^ !!ctx->certificate) {
+	if (!!ctx->private_key ^ !!ctx->certificates) {
 		uwsd_ssl_err(NULL, "Require both 'private-key' and 'certificate' properties");
 
 		return false;
 	}
 
-	if (ctx->private_key && ctx->certificate) {
+	if (ctx->private_key && ctx->certificates) {
 		pkey_fp = fopen(ctx->private_key, "r");
 
 		if (!pkey_fp) {
@@ -517,25 +559,24 @@ uwsd_ssl_client_ctx_init(uwsd_ssl_client_t *ctx)
 			return false;
 		}
 
-		cert_fp = fopen(ctx->certificate, "r");
+		cert_fp = fopen(ctx->certificates[0], "r");
 
 		if (!cert_fp) {
-			uwsd_ssl_err(NULL, "Unable to open certificate file '%s': %m", ctx->certificate);
+			uwsd_ssl_err(NULL, "Unable to open certificate file '%s': %m", ctx->certificates[0]);
 			fclose(pkey_fp);
 
 			return false;
 		}
 
-		if (!ssl_load_pem_privkey(ssl_ctx, pkey_fp, ctx->private_key) ||
-		    !ssl_load_pem_certificates(ssl_ctx, cert_fp, ctx->certificate)) {
-
-			SSL_CTX_free(ssl_ctx);
-
-			return false;
-		}
+		success = ssl_load_pem_files(ssl_ctx, pkey_fp, ctx->private_key,
+		                                      cert_fp, ctx->certificates[0],
+		                                      ctx->certificates + 1);
 
 		fclose(pkey_fp);
 		fclose(cert_fp);
+
+		if (!success)
+			return false;
 	}
 
 	switch (ctx->verify_server) {
