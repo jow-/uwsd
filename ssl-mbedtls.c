@@ -481,14 +481,11 @@ ssl_lookup_context_by_sockaddr(uwsd_client_context_t *cl, const struct sockaddr 
 }
 
 static bool
-ssl_create_context_from_pem(uwsd_ssl_t *ctx, FILE *pkey_fp, const char *pkey_path,
-                                             FILE *cert_fp, const char *cert_path)
+ssl_load_pem_files(ssl_ctx_t *ssl_ctx, const char *pkey_path,
+                                       char *const *cert_paths)
 {
-	ssl_ctx_t *ssl_ctx = ssl_create_context(true, ctx->protocols, ctx->ciphers);
+	size_t i;
 	int err;
-
-	if (!ssl_ctx)
-		return false;
 
 	err = mbedtls_pk_parse_keyfile(&ssl_ctx->key, pkey_path, NULL);
 
@@ -499,13 +496,15 @@ ssl_create_context_from_pem(uwsd_ssl_t *ctx, FILE *pkey_fp, const char *pkey_pat
 		return false;
 	}
 
-	err = mbedtls_x509_crt_parse_file(&ssl_ctx->certs, cert_path);
+	for (i = 0; cert_paths[i]; i++) {
+		err = mbedtls_x509_crt_parse_file(&ssl_ctx->certs, cert_paths[i]);
 
-	if (err) {
-		ssl_perror(NULL, err, "Unable to load certificates from from PEM file '%s'", cert_path);
-		ssl_free_context(ssl_ctx);
+		if (err) {
+			ssl_perror(NULL, err, "Unable to load certificates from from PEM file '%s'", cert_paths[i]);
+			ssl_free_context(ssl_ctx);
 
-		return false;
+			return false;
+		}
 	}
 
 	mbedtls_ssl_conf_ca_chain(&ssl_ctx->conf, ssl_ctx->certs.next, NULL);
@@ -513,16 +512,31 @@ ssl_create_context_from_pem(uwsd_ssl_t *ctx, FILE *pkey_fp, const char *pkey_pat
 	err = mbedtls_ssl_conf_own_cert(&ssl_ctx->conf, &ssl_ctx->certs, &ssl_ctx->key);
 
 	if (err) {
-		ssl_perror(NULL, err, "Unable to use certificate '%s' with key file '%s'", cert_path, pkey_path);
+		ssl_perror(NULL, err, "Unable to use certificate '%s' with key file '%s'", cert_paths[0], pkey_path);
 		ssl_free_context(ssl_ctx);
 
 		return false;
 	}
 
+	return true;
+}
+
+static bool
+ssl_create_context_from_pem(uwsd_ssl_t *ctx, const char *pkey_path,
+                                             char *const *cert_paths)
+{
+	ssl_ctx_t *ssl_ctx = ssl_create_context(true, ctx->protocols, ctx->ciphers);
+
+	if (!ssl_ctx)
+		return false;
+
+	if (!ssl_load_pem_files(ssl_ctx, pkey_path, cert_paths))
+		return false;
+
 	uwsd_ssl_info(NULL, "loading certificate '%s' by '%s' from '%s'",
 		ssl_get_subject_name(&ssl_ctx->certs),
 		ssl_get_issuer_name(&ssl_ctx->certs),
-		cert_path);
+		cert_paths[0]);
 
 	ctx->contexts.entries = xrealloc(ctx->contexts.entries,
 		sizeof(*ctx->contexts.entries) * (ctx->contexts.count + 1));
@@ -538,7 +552,6 @@ ssl_load_certificates(uwsd_ssl_t *ctx, const char *directory)
 	char path[PATH_MAX];
 	struct dirent *e;
 	struct stat s;
-	FILE *fp;
 	DIR *dp;
 
 	dp = opendir(directory);
@@ -560,16 +573,7 @@ ssl_load_certificates(uwsd_ssl_t *ctx, const char *directory)
 		if (!S_ISREG(s.st_mode))
 			continue;
 
-		fp = fopen(path, "r");
-
-		if (!fp) {
-			sys_perror("Unable to open '%s'", path);
-			continue;
-		}
-
-		ssl_create_context_from_pem(ctx, fp, path, fp, path);
-
-		fclose(fp);
+		ssl_create_context_from_pem(ctx, path, (char *const []){ path, NULL });
 	}
 
 	closedir(dp);
@@ -580,39 +584,18 @@ ssl_load_certificates(uwsd_ssl_t *ctx, const char *directory)
 __hidden bool
 uwsd_ssl_ctx_init(uwsd_ssl_t *ctx)
 {
-	FILE *pkey_fp, *cert_fp;
-
 	if (ctx->certificate_directory)
 		ssl_load_certificates(ctx, ctx->certificate_directory);
 
-	if (!!ctx->private_key ^ !!ctx->certificate) {
+	if (!!ctx->private_key ^ !!ctx->certificates) {
 		uwsd_ssl_err(NULL, "Require both 'private-key' and 'certificate' properties");
 
 		return false;
 	}
 
-	if (ctx->private_key && ctx->certificate) {
-		pkey_fp = fopen(ctx->private_key, "r");
-
-		if (!pkey_fp) {
-			uwsd_ssl_err(NULL, "Unable to open private key file '%s': %m", ctx->private_key);
-
+	if (ctx->private_key && ctx->certificates) {
+		if (!ssl_create_context_from_pem(ctx, ctx->private_key, ctx->certificates))
 			return false;
-		}
-
-		cert_fp = fopen(ctx->certificate, "r");
-
-		if (!cert_fp) {
-			uwsd_ssl_err(NULL, "Unable to open certificate file '%s': %m", ctx->certificate);
-			fclose(pkey_fp);
-
-			return false;
-		}
-
-		ssl_create_context_from_pem(ctx, pkey_fp, ctx->private_key, cert_fp, ctx->certificate);
-
-		fclose(pkey_fp);
-		fclose(cert_fp);
 	}
 
 	if (!ctx->contexts.count) {
@@ -642,37 +625,22 @@ uwsd_ssl_client_ctx_init(uwsd_ssl_client_t *ctx)
 	if (!ssl_ctx)
 		return false;
 
-	if (!!ctx->private_key ^ !!ctx->certificate) {
+	if (!!ctx->private_key ^ !!ctx->certificates) {
 		uwsd_ssl_err(NULL, "Require both 'private-key' and 'certificate' properties");
 
 		return false;
 	}
 
-	if (ctx->private_key && ctx->certificate) {
-		err = mbedtls_pk_parse_keyfile(&ssl_ctx->key, ctx->private_key, NULL);
-
-		if (err) {
-			ssl_perror(NULL, err, "Unable to load private key from PEM file '%s'", ctx->private_key);
-			ssl_free_context(ssl_ctx);
-
+	if (ctx->private_key && ctx->certificates) {
+		if (!ssl_load_pem_files(ssl_ctx, ctx->private_key, ctx->certificates))
 			return false;
-		}
-
-		err = mbedtls_x509_crt_parse_file(&ssl_ctx->certs, ctx->certificate);
-
-		if (err) {
-			ssl_perror(NULL, err, "Unable to load certificates from from PEM file '%s'", ctx->certificate);
-			ssl_free_context(ssl_ctx);
-
-			return false;
-		}
 
 		mbedtls_ssl_conf_ca_chain(&ssl_ctx->conf, ssl_ctx->certs.next, NULL);
 
 		err = mbedtls_ssl_conf_own_cert(&ssl_ctx->conf, &ssl_ctx->certs, &ssl_ctx->key);
 
 		if (err) {
-			ssl_perror(NULL, err, "Unable to use certificate '%s' with key file '%s'", ctx->certificate, ctx->private_key);
+			ssl_perror(NULL, err, "Unable to use certificate '%s' with key file '%s'", ctx->certificates[0], ctx->private_key);
 			ssl_free_context(ssl_ctx);
 
 			return false;
