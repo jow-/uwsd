@@ -439,7 +439,7 @@ static char
 hex(char c)
 {
 	if ((c|32) >= 'a')
-		return (c|32) - 'a';
+		return 10 + (c|32) - 'a';
 
 	return c - '0';
 }
