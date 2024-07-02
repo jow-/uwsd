@@ -1780,7 +1780,7 @@ uwsd_http_state_upstream_connected(uwsd_client_context_t *cl, uwsd_connection_st
 	size_t i;
 
 	if (cl->action->type == UWSD_ACTION_SCRIPT) {
-		if (!uwsd_script_request(cl, -1))
+		if (!uwsd_script_request(cl))
 			return; /* failure */
 	}
 	else if (cl->action->type == UWSD_ACTION_TCP_PROXY) {

@@ -2197,7 +2197,7 @@ uwsd_script_free(uwsd_action_t *action)
 }
 
 __hidden bool
-uwsd_script_request(uwsd_client_context_t *cl, int downstream)
+uwsd_script_request(uwsd_client_context_t *cl)
 {
 	uint16_t tv[cl->http_num_headers], lv[cl->http_num_headers];
 	struct iovec iov[(7 + cl->http_num_headers) * 3];
