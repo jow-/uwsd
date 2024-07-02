@@ -1055,6 +1055,88 @@ uc_script_sha1digest(uc_vm_t *vm, size_t nargs)
 	return ucv_string_new(digest);
 }
 
+static uc_value_t *
+uc_script_uuid(uc_vm_t *vm, size_t nargs)
+{
+	uc_value_t *seedval = uc_fn_arg(0);
+	char uuid[37], *p = uuid;
+	unsigned int seed;
+
+	if (seedval == NULL) {
+		seed = time(NULL);
+	}
+	else {
+		union { double d; int64_t i; uint64_t u; } conv;
+		uint8_t *u8;
+		size_t len;
+
+		seed = ucv_type(seedval);
+
+		switch (seed) {
+		case UC_STRING:
+			u8 = (uint8_t *)ucv_string_get(seedval);
+			len = ucv_string_length(seedval);
+			break;
+
+		case UC_INTEGER:
+			conv.i = ucv_int64_get(seedval);
+
+			if (errno == ERANGE) {
+				seed *= 2;
+				conv.u = ucv_uint64_get(seedval);
+			}
+
+			u8 = (uint8_t *)&conv.u;
+			len = sizeof(conv.u);
+			break;
+
+		case UC_DOUBLE:
+			conv.d = ucv_double_get(seedval);
+
+			u8 = (uint8_t *)&conv.u;
+			len = sizeof(conv.u);
+			break;
+
+		default:
+			u8 = (uint8_t *)&seedval;
+			len = sizeof(seedval);
+			break;
+		}
+
+		while (len > 0) {
+			seed = seed * 129 + (*u8++) + LH_PRIME;
+			len--;
+		}
+	}
+
+	srand(seed);
+
+	for (size_t n = 0; n < 16; n++) {
+		int r = rand() % 256;
+
+		switch (n) {
+		case 6:  sprintf(p, "4%x", r % 16);                    break;
+		case 8:  sprintf(p, "%x%x", 8 + (rand() % 4), r % 16); break;
+		default: sprintf(p, "%02x", r);                        break;
+		}
+
+		p += 2;
+
+		switch (n) {
+		case 3:
+		case 5:
+		case 7:
+		case 9:
+			*p++ = '-';
+			break;
+		}
+	}
+
+	*p = '\0';
+
+	return ucv_string_new_length(uuid, 36);
+}
+
 static uc_resource_type_t *
 uc_script_acquire_file_resource(uc_vm_t *vm)
 {
@@ -1750,6 +1832,7 @@ uc_script_api_init(uc_vm_t *vm)
 
 	ucv_object_add(api, "connections", ucv_cfunction_new("connections", uc_script_connections));
 	ucv_object_add(api, "sha1digest", ucv_cfunction_new("sha1digest", uc_script_sha1digest));
+	ucv_object_add(api, "uuid", ucv_cfunction_new("uuid", uc_script_uuid));
 	ucv_object_add(api, "spawn", ucv_cfunction_new("spawn", uc_script_spawn));
 
 	ucv_object_add(uc_vm_scope_get(vm), "uwsd", api);
