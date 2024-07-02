@@ -52,6 +52,9 @@ client_create(int fd, uwsd_listen_t *listen, struct sockaddr *peeraddr, size_t a
 	cl->downstream.ufd.fd = fd;
 	cl->upstream.ufd.fd = -1;
 
+	cl->http.pipebuf[0] = -1;
+	cl->http.pipebuf[1] = -1;
+
 	memcpy(&cl->sa_peer.unspec, peeraddr, alen);
 
 	list_add_tail(&cl->list, &clients);
@@ -102,6 +105,12 @@ client_free(uwsd_client_context_t *cl, const char *reason, ...)
 
 	if (cl->downstream.ufd.fd != -1)
 		close(cl->downstream.ufd.fd);
+
+	if (cl->http.pipebuf[0] != -1)
+		close(cl->http.pipebuf[0]);
+
+	if (cl->http.pipebuf[1] != -1)
+		close(cl->http.pipebuf[1]);
 
 	while (cl->http_num_headers > 0)
 		free(cl->http_headers[--cl->http_num_headers].name);
