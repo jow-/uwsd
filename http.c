@@ -306,7 +306,7 @@ http_determine_message_length(uwsd_client_context_t *cl, bool request)
 	tenc = uwsd_http_header_lookup(cl, "Transfer-Encoding");
 	clen = uwsd_http_header_lookup(cl, "Content-Length");
 
-	if (cl->http_version <= 0x1000 || uwsd_http_header_contains(cl, "Connection", "close"))
+	if (cl->http_version <= 0x0100 || uwsd_http_header_contains(cl, "Connection", "close"))
 		*flags |= HTTP_WANT_CLOSE;
 
 	if (tenc) {
@@ -330,8 +330,8 @@ http_determine_message_length(uwsd_client_context_t *cl, bool request)
 		cl->request_length = hlen;
 		http_state_transition(cl, STATE_HTTP_BODY_KNOWN_LENGTH);
 	}
-	else if (cl->http_version <= 0x1000 && cl->request_method == HTTP_POST) {
-		uwsd_http_error_return(cl, 400, "Bad Request", "Content-Length required\n");
+	else if (cl->http_version <= 0x0100 && cl->request_method == HTTP_POST) {
+		uwsd_http_error_return(cl, 411, "Length Required", "Content-Length required\n");
 	}
 	else if ((!request && http_may_have_body(cl->http_status)) &&
 	         (cl->http_version <= 0x0100 || cl->action->type == UWSD_ACTION_SCRIPT)) {
