@@ -97,6 +97,7 @@ typedef struct {
 		uint8_t data[16384];
 	} buf;
 	uc_value_t *req, *hdr, *conn, *data, *subproto;
+	uc_value_t *recv_fp;
 	struct {
 		uwsd_ws_msg_format_t format;
 		union {
@@ -564,6 +565,8 @@ script_conn_close(script_connection_t *conn, uint16_t code, const char *msg)
 	ucv_clear(&conn->subproto);
 	ucv_clear(&conn->conn);
 
+	ucv_clear(&conn->recv_fp);
+
 	uloop_fd_delete(&conn->ufd);
 	list_del(&conn->list);
 
@@ -634,12 +637,130 @@ script_conn_http_request(script_connection_t *conn)
 	return true;
 }
 
+static uc_resource_type_t *
+uc_script_acquire_file_resource(uc_vm_t *vm)
+{
+	uc_resource_type_t *restype;
+	uc_cfn_ptr_t requirefn;
+
+	restype = ucv_resource_type_lookup(vm, "fs.file");
+
+	if (!restype) {
+		requirefn = uc_stdlib_function("require");
+
+		uc_vm_stack_push(vm, ucv_string_new("fs"));
+		ucv_put(requirefn(vm, 1));
+
+		restype = ucv_resource_type_lookup(vm, "fs.file");
+	}
+
+	return restype;
+}
+
+static uc_value_t *
+uv_to_handle(uc_vm_t *vm, uc_value_t *uv)
+{
+	uc_resource_type_t *filetype = uc_script_acquire_file_resource(vm);
+	int fd = -1;
+
+	/* accept file and process handles as-is */
+	if (ucv_resource_data(uv, "fs.file") || ucv_resource_data(uv, "fs.proc"))
+		return ucv_get(uv);
+
+	/* convert valid descriptor numbers to fs.file instances */
+	if (ucv_type(uv) == UC_INTEGER) {
+		fd = ucv_int64_get(uv);
+
+		if (errno != 0 || fd < 0)
+			return NULL;
+	}
+
+	/* convert other objects implementing fileno() to fs.file instances */
+	else {
+		uc_value_t *fno = ucv_property_get(uv, "fileno");
+
+		if (!ucv_is_callable(fno))
+			return NULL;
+
+		uc_vm_stack_push(vm, ucv_get(fno));
+		uc_vm_stack_push(vm, ucv_get(uv));
+
+		if (uc_vm_call(vm, true, 0) != EXCEPTION_NONE)
+			return NULL;
+
+		uc_value_t *fp = uc_vm_stack_pop(vm);
+
+		fd = ucv_int64_get(fp);
+
+		if (errno != 0 || fd < 0)
+			return NULL;
+	}
+
+	int flags = fcntl(fd, F_GETFL);
+
+	if (flags != -1) {
+		const char *mode;
+
+		switch (flags & O_ACCMODE) {
+		case O_RDONLY: mode = "r";                              break;
+		case O_WRONLY: mode = (flags & O_APPEND) ? "a"  : "w";  break;
+		default:       mode = (flags & O_APPEND) ? "a+" : "w+"; break;
+		}
+
+		FILE *fp = fdopen(fd, mode);
+
+		if (fp != NULL)
+			return uc_resource_new(filetype, fp);
+	}
+
+	return NULL;
+}
+
+static FILE *
+uv_to_stdio(uc_value_t *uv)
+{
+	FILE *fp;
+
+	if ((fp = ucv_resource_data(uv, "fs.file")) != NULL)
+		return fp;
+
+	if ((fp = ucv_resource_data(uv, "fs.proc")) != NULL)
+		return fp;
+
+	return NULL;
+}
+
 static bool
 script_conn_http_body(script_connection_t *conn, const void *data, size_t len)
 {
 	uc_vm_t *vm = &conn->ctx->vm;
 	uc_exception_type_t ex;
 	uc_value_t *ctx;
+
+	/* handler registered receive descriptor, store data directly */
+	FILE *fp = uv_to_stdio(conn->recv_fp);
+	if (fp != NULL) {
+		if (len > 0) {
+			size_t wlen = fwrite(data, 1, len, fp);
+
+			if (wlen < len || ferror(fp)) {
+				http_reply_send(conn,
+					500, "Internal Server Error",
+					"Target file write error",
+					"Connection", "close",
+					UWSD_HTTP_REPLY_EOH
+				);
+
+				script_conn_close(conn, 0, NULL);
+
+				return false;
+			}
+
+			return true;
+		}
+
+		fflush(fp);
+	}
 
 	if (!conn->ctx->onBody)
 		return true;
@@ -901,6 +1022,33 @@ uc_script_request_info(uc_vm_t *vm, size_t nargs)
 }
 
 static uc_value_t *
+uc_script_store(uc_vm_t *vm, size_t nargs)
+{
+	script_connection_t **conn = uc_fn_this("uwsd.connection");
+	uc_value_t *handle = uc_fn_arg(0);
+	uc_value_t *fp = uv_to_handle(vm, handle);
+
+	if (!fp) {
+		if (vm->exception.type == EXCEPTION_NONE) {
+			char *s = ucv_to_string(vm, handle);
+
+			uc_vm_raise_exception(vm, EXCEPTION_TYPE,
+				"Expecting valid file handle, got '%s'", s);
+
+			free(s);
+		}
+
+		return NULL;
+	}
+
+	ucv_put((*conn)->recv_fp);
+
+	(*conn)->recv_fp = fp;
+
+	return ucv_boolean_new(true);
+}
+
+static uc_value_t *
 uc_script_reply(uc_vm_t *vm, size_t nargs)
 {
 	script_connection_t **conn = uc_fn_this("uwsd.connection");
@@ -997,6 +1145,7 @@ static const uc_function_list_t conn_fns[] = {
 	{ "info",    uc_script_request_info },
 	{ "data",    uc_script_data },
 
+	{ "store",   uc_script_store },
 	{ "reply",   uc_script_reply },
 	{ "accept",  uc_script_accept },
 	{ "expect",  uc_script_expect },
@@ -1135,26 +1284,6 @@ uc_script_uuid(uc_vm_t *vm, size_t nargs)
 	*p = '\0';
 
 	return ucv_string_new_length(uuid, 36);
-}
-
-static uc_resource_type_t *
-uc_script_acquire_file_resource(uc_vm_t *vm)
-{
-	uc_resource_type_t *restype;
-	uc_cfn_ptr_t requirefn;
-
-	restype = ucv_resource_type_lookup(vm, "fs.file");
-
-	if (!restype) {
-		requirefn = uc_stdlib_function("require");
-
-		uc_vm_stack_push(vm, ucv_string_new("fs"));
-		ucv_put(requirefn(vm, 1));
-
-		restype = ucv_resource_type_lookup(vm, "fs.file");
-	}
-
-	return restype;
 }
 
 typedef struct {
