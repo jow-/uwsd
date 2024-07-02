@@ -20,6 +20,8 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <assert.h>
 #include <fnmatch.h>
 
@@ -108,6 +110,15 @@ http_state_reset(uwsd_client_context_t *cl, uwsd_http_state_t state)
 
 	cl->http.request_flags = 0;
 	cl->http.response_flags = 0;
+
+	if (cl->http.pipebuf[0] > -1)
+		close(cl->http.pipebuf[0]);
+
+	if (cl->http.pipebuf[1] > -1)
+		close(cl->http.pipebuf[1]);
+
+	cl->http.pipebuf[0] = -1;
+	cl->http.pipebuf[1] = -1;
 
 	/* Transition to initial HTTP parsing state */
 	http_state_transition(cl, state);
@@ -1841,7 +1852,8 @@ __hidden void
 uwsd_http_state_upstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
 	while (true) {
-		if (cl->action->type != UWSD_ACTION_SCRIPT &&!uwsd_iov_tx(&cl->upstream, STATE_CONN_UPSTREAM_SEND))
+		if (cl->action->type != UWSD_ACTION_SCRIPT &&
+		    !uwsd_iov_tx(&cl->upstream, STATE_CONN_UPSTREAM_SEND))
 			return; /* failure or partial send */
 
 		if (!uwsd_io_pending(&cl->downstream) &&
@@ -1933,6 +1945,15 @@ append_host_header(uwsd_connection_t *httpbuf, uwsd_client_context_t *cl)
 	uwsd_io_printf(httpbuf, "\r\n");
 }
 
+static bool
+http_use_splice_tx(uwsd_client_context_t *cl)
+{
+	return (cl->http.response_flags & HTTP_SEND_PLAIN) &&
+	       (cl->downstream.ssl == NULL) && (cl->upstream.ssl == NULL) &&
+	       (cl->http.state == STATE_HTTP_BODY_KNOWN_LENGTH) &&
+	       (cl->request_length > 0);
+}
+
 __hidden void
 uwsd_http_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
@@ -1943,6 +1964,45 @@ uwsd_http_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 	bool chunked, eof;
 	uint16_t code;
 	size_t i;
+
+	if (http_use_splice_tx(cl)) {
+		if (cl->http.pipebuf[1] == -1 && pipe(cl->http.pipebuf) == -1) {
+			uwsd_http_error_send(cl, 500, "Internal Server Error",
+				"Error spawning transfer pipe: %m\n");
+			return;
+		}
+
+		ssize_t wlen = splice(
+			cl->upstream.ufd.fd, NULL, cl->http.pipebuf[1], NULL,
+			cl->request_length, SPLICE_F_NONBLOCK);
+
+		/* unrecoverable error */
+		if (wlen < 0) {
+			uwsd_http_error_send(cl, 500, "Internal Server Error",
+				"Error receiving upstream response: %m");
+
+			return;
+		}
+
+		/* unexpected eof */
+		else if (wlen == 0) {
+			uwsd_http_warn(cl,
+				"premature eof reading upstream response, "
+				"%zu byte outstanding", cl->request_length);
+
+			cl->request_length = 0;
+		}
+
+		/* data spliced */
+		else {
+			cl->request_length -= wlen;
+		}
+
+		cl->http.pipebuf_len += wlen;
+
+		uwsd_state_transition(cl, STATE_CONN_DOWNSTREAM_SEND);
+		return;
+	}
 
 	if (!uwsd_io_readahead(&cl->upstream))
 		return; /* failure */
@@ -2056,17 +2116,48 @@ uwsd_http_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 __hidden void
 uwsd_http_state_downstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
-	while (true) {
-		if (!uwsd_iov_tx(&cl->downstream, STATE_CONN_DOWNSTREAM_SEND))
-			return; /* failure or partial send */
+	/* fastpath: use splice() to transfer buffer data */
+	if (cl->http.pipebuf[0] > -1) {
+		ssize_t wlen = splice(
+			cl->http.pipebuf[0], NULL,
+			cl->downstream.ufd.fd, NULL,
+			cl->http.pipebuf_len, SPLICE_F_NONBLOCK);
 
-		if (!uwsd_io_pending(&cl->upstream) &&
-		    cl->http.state != STATE_HTTP_CHUNK_DONE &&
-		    cl->http.state != STATE_HTTP_REQUEST_DONE)
-			break;
+		/* unrecoverable send error */
+		if (wlen < 0)
+			return client_free(cl, "downstream send error: %m");
 
-		if (!http_response_recv(cl))
-			return; /* failure */
+		cl->http.pipebuf_len -= wlen;
+
+		if (cl->http.pipebuf_len > 0)
+			return; /* partial send */
+
+		/* sender is done, there's no more data */
+		if (cl->request_length == 0) {
+			close(cl->http.pipebuf[0]);
+			cl->http.pipebuf[0] = -1;
+
+			close(cl->http.pipebuf[1]);
+			cl->http.pipebuf[1] = -1;
+
+			http_state_transition(cl, STATE_HTTP_BODY_CLOSE);
+		}
+	}
+
+	/* slowpath: use readv/writev copy semantics */
+	else {
+		while (true) {
+			if (!uwsd_iov_tx(&cl->downstream, STATE_CONN_DOWNSTREAM_SEND))
+				return; /* failure or partial send */
+
+			if (!uwsd_io_pending(&cl->upstream) &&
+				cl->http.state != STATE_HTTP_CHUNK_DONE &&
+				cl->http.state != STATE_HTTP_REQUEST_DONE)
+				break;
+
+			if (!http_response_recv(cl))
+				return; /* failure */
+		}
 	}
 
 	if (cl->http.state == STATE_HTTP_BODY_CLOSE) {
