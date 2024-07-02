@@ -23,9 +23,11 @@
 #include <ctype.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <limits.h>
 
 #include <arpa/inet.h>
 #include <sys/wait.h>
+#include <sys/sendfile.h>
 
 #include <libubox/uloop.h>
 #include <ucode/compiler.h>
@@ -730,6 +732,14 @@ uv_to_stdio(uc_value_t *uv)
 	return NULL;
 }
 
+static int
+uv_to_fd(uc_value_t *uv)
+{
+	FILE *fp = uv_to_stdio(uv);
+
+	return fp ? fileno(fp) : -1;
+}
+
 static bool
 script_conn_http_body(script_connection_t *conn, const void *data, size_t len)
 {
@@ -1048,6 +1058,90 @@ uc_script_store(uc_vm_t *vm, size_t nargs)
 	return ucv_boolean_new(true);
 }
 
+static ssize_t
+copy_sendfile(int in_fd, script_connection_t *conn, ssize_t len)
+{
+	ssize_t copied = 0;
+
+	while (len > 0) {
+		ssize_t wlen = sendfile(conn->ufd.fd, in_fd, NULL, len);
+
+		if (wlen < 0)
+			return -1;
+
+		len -= wlen;
+		copied += wlen;
+	}
+
+	return copied;
+}
+
+static ssize_t
+copy_splice(int in_fd, script_connection_t *conn)
+{
+	ssize_t copied = 0;
+
+	while (true) {
+		ssize_t wlen = splice(in_fd, NULL, conn->ufd.fd, NULL, SSIZE_MAX, 0);
+
+		if (wlen < 0)
+			return -1;
+
+		if (wlen == 0)
+			break;
+
+		copied += wlen;
+	}
+
+	return copied;
+}
+
+static ssize_t
+copy_writev(int in_fd, script_connection_t *conn)
+{
+	ssize_t copied = 0;
+
+	while (true) {
+		struct iovec iov = {
+			.iov_base = conn->buf.data,
+			.iov_len = sizeof(conn->buf.data)
+		};
+
+		ssize_t rlen = readv(in_fd, &iov, 1);
+
+		if (rlen == -1) {
+			if (errno == EINTR)
+				continue;
+
+			if (errno == EAGAIN)
+				break;
+
+			return -1;
+		}
+
+		if (rlen == 0)
+			break;
+
+		while (iov.iov_len > 0) {
+			ssize_t wlen = writev(conn->ufd.fd, &iov, 1);
+
+			if (wlen == -1) {
+				if (errno == EINTR)
+					continue;
+
+				return -1;
+			}
+
+			iov.iov_base += wlen;
+			iov.iov_len -= wlen;
+
+			copied += wlen;
+		}
+	}
+
+	return copied;
+}
+
 static uc_value_t *
 uc_script_reply(uc_vm_t *vm, size_t nargs)
 {
@@ -1097,22 +1191,38 @@ uc_script_reply(uc_vm_t *vm, size_t nargs)
 	if (!found)
 		printbuf_strappend(buf, "Content-Type: application/octet-stream\r\n");
 
-	ucv_object_get(header, "Content-Length", &found);
+	uc_value_t *handle = uv_to_handle(vm, body);
+	ssize_t handle_len = -1;
 
-	if (!found) {
-		lenoff = printbuf_length(buf) + strlen("Content-Length: ");
-		printbuf_strappend(buf, "Content-Length: 00000000000000000000\r\n");
+	if (handle == NULL) {
+		ucv_object_get(header, "Content-Length", &found);
+
+		if (!found) {
+			lenoff = printbuf_length(buf) + strlen("Content-Length: ");
+			printbuf_strappend(buf, "Content-Length: 00000000000000000000\r\n");
+		}
+
+		printbuf_strappend(buf, "\r\n");
+		n = printbuf_length(buf);
+
+		if (body)
+			ucv_to_stringbuf(vm, buf, body, false);
+
+		if (lenoff) {
+			snprintf(buf->buf + lenoff, 21, "%-20zd", printbuf_length(buf) - n);
+			buf->buf[lenoff + 20] = '\r';
+		}
 	}
+	else {
+		int fd = uv_to_fd(handle);
+		struct stat s;
 
-	printbuf_strappend(buf, "\r\n");
-	n = printbuf_length(buf);
+		if (fstat(fd, &s) == 0 && S_ISREG(s.st_mode)) {
+			handle_len = s.st_size;
+			sprintbuf(buf, "Content-Length: %zd\r\n", handle_len);
+		}
 
-	if (body)
-		ucv_to_stringbuf(vm, buf, body, false);
-
-	if (lenoff) {
-		snprintf(buf->buf + lenoff, 21, "%-20zd", printbuf_length(buf) - n);
-		buf->buf[lenoff + 20] = '\r';
+		printbuf_strappend(buf, "\r\n");
 	}
 
 	for (p = buf->buf, n = printbuf_length(buf); n > 0; ) {
@@ -1131,6 +1241,30 @@ uc_script_reply(uc_vm_t *vm, size_t nargs)
 	}
 
 	printbuf_free(buf);
+
+	if (handle != NULL) {
+		int fd = uv_to_fd(handle);
+
+		if (fd != -1) {
+			ssize_t copied;
+
+			if (handle_len > -1)
+				copied = copy_sendfile(fd, *conn, handle_len);
+			else
+				copied = -1, errno = ENOSYS;
+
+			if (copied == -1 && (errno == ENOSYS || errno == EINVAL))
+				copied = copy_splice(fd, *conn);
+
+			if (copied == -1 && errno == EINVAL)
+				copied = copy_writev(fd, *conn);
+
+			if (copied == -1)
+				uc_vm_raise_exception(vm, EXCEPTION_RUNTIME, "send error: %m");
+		}
+
+		ucv_put(handle);
+	}
 
 	*conn = NULL;
 
