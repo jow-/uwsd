@@ -654,8 +654,8 @@ config_parse_value(const char **input, const config_prop_t *prop, void *base)
 			"false", "\0", "no", "\0", "off", "\0", "disabled", "\0",
 			NULL, NULL
 		}; *l; l += 2) {
-			if (!strcmp(p, *l)) {
-				e = *l;
+			if (!strcmp(p, l[0])) {
+				e = l[1];
 				break;
 			}
 		}
