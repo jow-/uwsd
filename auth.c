@@ -138,7 +138,7 @@ fail:
 		"WWW-Authenticate", hdr,
 		UWSD_HTTP_REPLY_EOH);
 
-	uwsd_http_reply_send(cl, true);
+	uwsd_http_reply_send(cl, HTTP_WANT_CLOSE);
 
 	free(dec);
 	free(hdr);
@@ -182,7 +182,7 @@ fail:
 		"Peer certificate refused\n",
 		UWSD_HTTP_REPLY_EOH);
 
-	uwsd_http_reply_send(cl, true);
+	uwsd_http_reply_send(cl, HTTP_WANT_CLOSE);
 
 	return false;
 }

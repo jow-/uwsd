@@ -12,6 +12,8 @@
 
 'use strict';
 
+import { basename, mkstemp } from 'fs';
+
 const pasted_files = {};
 let paste_counter = 0;
 
@@ -21,59 +23,6 @@ function clockms() {
 	const t = clock(true);
 
 	return (t[0] * 1000) + (t[1] / 1000000);
-}
-
-// Helper function to extract the file payload from a multipart POST body
-function filedata(ctype, body) {
-	let boundary = match(ctype, /^multipart\/form-data;.*\bboundary=([^;]+)/)?.[1];
-
-	if (!boundary)
-		return null;
-
-	if (substr(body, 0, 2) != '--' ||
-	    substr(body, 2, length(boundary)) != boundary ||
-	    substr(body, 2 + length(boundary), 2) != '\r\n' ||
-	    substr(body, -(length(boundary) + 8), 4) != '\r\n--' ||
-		substr(body, -(length(boundary) + 4), length(boundary)) != boundary ||
-		substr(body, -4, 4) != '--\r\n')
-	    return null;
-
-	let chunks = split(
-		substr(body, 4 + length(boundary), -(length(boundary) + 8)),
-		`\r\n--${boundary}\r\n`
-	);
-
-	for (let chunk in chunks) {
-		let header_payload = split(chunk, '\r\n\r\n', 2);
-		let headers = {};
-		let data;
-
-		if (length(header_payload) == 2) {
-			for (let header in split(header_payload[1] ? header_payload[0] : '', '\r\n')) {
-				let nv = split(header, ':', 2);
-
-				if (length(nv) == 2)
-					headers[lc(trim(nv[0]))] = trim(nv[1]);
-			}
-
-			data = header_payload[1];
-		}
-		else {
-			data = header_payload[0];
-		}
-
-		let cdisp = match(headers['content-disposition'], /^form-data;.*\bfilename=("(([^"\\]|\\.)+)"|'(([^'\\]|\\.)+)'|([^;]+\b))/);
-
-		if (cdisp) {
-			return {
-				name: trim(length(cdisp[2]) ? cdisp[2] : (length(cdisp[4]) ? cdisp[4] : cdisp[6])),
-				type: match(headers['content-type'], /^([^/]+\/[^;\s]+)\b/)?.[1],
-				data
-			};
-		}
-	}
-
-	return null;
 }
 
 // This callback is invoked when the header portion of an HTTP request
@@ -91,9 +40,74 @@ function filedata(ctype, body) {
 // using `connection.reply([headers[, body]])` here.
 export function onRequest(request, method, uri)
 {
-	// Create a context dictionary here and attach it to the request,
-	// we'll use it as scratch space to accumulate some data.
-	request.data({ request_start: clockms() });
+	// When we receove a PUT request, create context dictionary for the file
+	// upload and attach it to the request context so that we can retrieve it
+	// later in the onBody callback.
+	if (method == 'PUT') {
+		const mimetype = match(request.header('Content-Type'), /^([^/]+\/[^;[:space:]]+)\b/)?.[1];
+		const filesize = request.header('Content-Length');
+
+		// Require a length
+		if (filesize == null) {
+			return request.reply({
+				'Status': '411 Length Required',
+				'Content-Type': 'text/plain'
+			}, 'The request must specify a Content-Length');
+		}
+
+		// Check that length is valid
+		if (!match(filesize, /^[0-9]+$/)) {
+			return request.reply({
+				'Status': '400 Bad Request',
+				'Content-Type': 'text/plain'
+			}, 'Invalid Content-Length value in request');
+		}
+
+		// Ensure that length is below one megabyte
+		if (+filesize > 1024 * 1024) {
+			return request.reply({
+				'Status': '413 Payload Too Large',
+				'Content-Type': 'text/plain'
+			}, 'Please do not upload files larger than 1MB');
+		}
+
+		// Check that upload mimetype is image/* or text/*
+		if (!match(mimetype, /^(text|image)\//)) {
+			return request.reply({
+				'Status': '422 Unprocessable Entity',
+				'Content-Type': 'text/plain'
+			}, 'Please only upload image or text files');
+		}
+
+		// Create secure temporary file (it is unlinked already)
+		const tempfile = mkstemp();
+
+		// Create a unique file ID
+		const file_uuid = uwsd.uuid();
+
+		// Create file record
+		const file_record = pasted_files[file_uuid] = {
+			id: file_uuid,
+			filesize: +filesize,
+			mimetype,
+			handle: tempfile,
+			name: basename(request.uri()),
+			sender_ua: request.header('User-Agent'),
+			sender_ip: request.info()?.peer_address,
+			duration: 0,
+			uploaded: time(),
+			...request.info()
+		};
+
+		// Store current time and file request in request context data
+		request.data({
+			request_start: clockms(),
+			file_record
+		});
+
+		// Tell uwsd to write subsequent request body data to tempfile handle
+		request.store(tempfile);
+	}
 
 	// Since we'll deal with the request in `onBody()` later, there's
 	// not much left to do here. Simply log the received request to
@@ -128,72 +142,27 @@ export function onBody(request, data)
 	// HTTP version and header are available through the `uri()`,
 	// `method()`, `version()` and `header()` methods respectively.
 
-	// We're receiving an upload...
-	if (request.method() == 'POST') {
-		// Limit upload size to 1MB total
-		if (length(ctx.body) + length(data) > 1048576) {
-			return request.reply({
-				'Status': '413 Payload Too Large',
-				'Content-Type': 'text/plain'
-			}, 'Please do not upload files larger than 1MB');
-		}
-
-		// Not the final chunk, store in context and return
-		if (length(data)) {
-			ctx.body = ctx.body ? ctx.body + data : data;
-
-			return;
-		}
-	}
-
-	// If it's not a POST, it should be a GET or DELETE.
-	// Reject other methods as we do not implement them.
-	else if (!(request.method() in ['GET', 'DELETE'])) {
-		return request.reply({
-			'Status': '405 Method Not Allowed',
-			'Content-Type': 'text/plain'
-		}, 'Please only send GET, DELETE or POST requests');
-	}
-
-	// At this point we completely received our request, see if it
-	// was a file upload (POST) or download (GET) and deal with it
-	// accordingly...
-	if (ctx.body) {
-		let file = filedata(request.header('Content-Type'), ctx.body);
-
-		if (!file) {
-			return request.reply({
-				'Status': '422 Unprocessable Entity',
-				'Content-Type': 'text/plain'
-			}, 'Unable to find file data in POST request body');
-		}
-
-		pasted_files[paste_counter] = {
-			mimetype: file.type,
-			data: file.data,
-			name: file.name,
-			sender_ua: request.header('User-Agent'),
-			sender_ip: request.info()?.peer_address,
-			duration: clockms() - ctx.request_start,
-			uploaded: time(),
-			...request.info()
-		};
+	// We received an upload...
+	if (request.method() == 'PUT') {
+		ctx.file_record.duration = clockms() - ctx.request_start;
 
 		return request.reply({
-			'Status': '200 OK',
-			'Content-Type': 'application/json'
+			'Status': '201 Created',
+			'Content-Type': 'application/json',
+			'Location': `/api/file/${ctx.file_record.id}`
 		}, {
-			mimetype: file.type,
-			name: file.name,
-			url: `/file/${paste_counter++}`
+			name: ctx.file_record.name,
+			url: `/file/${ctx.file_record.id}`
 		});
 	}
+
+	// A delete request...
 	else if (request.method() == 'DELETE') {
 		let uri = request.uri();
 		let m;
 
 		// DELETE access to /api/file/#
-		if ((m = match(uri, regexp('/file/([0-9]+)$'))) != null) {
+		if ((m = match(uri, regexp('/file/([0-9a-f-]+)$'))) != null) {
 			if (!exists(pasted_files, m[1])) {
 				return request.reply({
 					'Status': '404 Not Found',
@@ -215,12 +184,14 @@ export function onBody(request, data)
 			}, 'The requested resource cannot be deleted');
 		}
 	}
-	else {
+
+	// A get request...
+	else if (request.method() == 'GET') {
 		let uri = request.uri();
 		let m;
 
 		// GET access to /api/file/#
-		if ((m = match(uri, regexp('/file/([0-9]+)$'))) != null) {
+		if ((m = match(uri, regexp('/file/([0-9a-f-]+)$'))) != null) {
 			if (!exists(pasted_files, m[1])) {
 				return request.reply({
 					'Status': '404 Not Found',
@@ -228,11 +199,12 @@ export function onBody(request, data)
 				}, 'No such file ID');
 			}
 
+			pasted_files[m[1]].handle.seek(0, 0);
+
 			return request.reply({
 				'Status': '200 OK',
-				'Content-Length': length(pasted_files[m[1]].data),
 				'Content-Type': pasted_files[m[1]].mimetype
-			}, pasted_files[m[1]].data);
+			}, pasted_files[m[1]].handle);
 		}
 
 		// GET access to /api/list/
@@ -242,6 +214,7 @@ export function onBody(request, data)
 				'Content-Type': 'application/json'
 			}, map(keys(pasted_files), (id, i) => ({
 				mimetype: pasted_files[id].mimetype,
+				filesize: pasted_files[id].filesize,
 				name: pasted_files[id].name,
 				sender_ua: pasted_files[id].sender_ua,
 				sender_ip: pasted_files[id].sender_ip,
@@ -260,5 +233,12 @@ export function onBody(request, data)
 		}
 	}
 
-	return 1;
+	// If it's not a PUT, GET or DELETE then reject it as we do not implement
+	// other methods.
+	else {
+		return request.reply({
+			'Status': '405 Method Not Allowed',
+			'Content-Type': 'text/plain'
+		}, 'Please only send GET, DELETE or PUT requests');
+	}
 };

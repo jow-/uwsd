@@ -116,7 +116,7 @@ uwsd_http_reply_buffer(void *buf, size_t buflen, double http_version,
 			##__VA_ARGS__,												\
 			"Connection", "close", UWSD_HTTP_REPLY_EOH);				\
 																		\
-		if (uwsd_http_reply_send(cl, true))								\
+		if (uwsd_http_reply_send(cl, HTTP_WANT_CLOSE))					\
 			client_free(cl, "%hu (%s)", code, reason ? reason : "-");	\
 	} while(0)
 
@@ -130,7 +130,7 @@ uwsd_http_reply_buffer(void *buf, size_t buflen, double http_version,
 __hidden char *uwsd_http_header_lookup(uwsd_client_context_t *, const char *);
 __hidden bool uwsd_http_header_contains(uwsd_client_context_t *, const char *, const char *);
 
-__hidden bool uwsd_http_reply_send(uwsd_client_context_t *, bool);
+__hidden bool uwsd_http_reply_send(uwsd_client_context_t *, uint32_t);
 
 __hidden void uwsd_http_state_idle_timeout(uwsd_client_context_t *, uwsd_connection_state_t, bool);
 

@@ -73,6 +73,8 @@ typedef struct uwsd_client_context {
 		uwsd_http_state_t state;
 		uint32_t request_flags;
 		uint32_t response_flags;
+		int pipebuf[2];
+		size_t pipebuf_len;
 	} http;
 	struct {
 		uwsd_ws_state_t state;

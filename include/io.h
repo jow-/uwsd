@@ -23,6 +23,7 @@
 #include <sys/uio.h>
 
 #include "util.h"
+#include "client.h"
 
 #define uwsd_iov_put(cl, ...) _uwsd_iov_put(cl, ##__VA_ARGS__, NULL)
 

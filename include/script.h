@@ -32,7 +32,7 @@ __hidden bool uwsd_script_send(uwsd_client_context_t *, const void *, size_t);
 __hidden void uwsd_script_close(uwsd_client_context_t *);
 __hidden void uwsd_script_free(uwsd_action_t *);
 
-__hidden bool uwsd_script_request(uwsd_client_context_t *, int);
+__hidden bool uwsd_script_request(uwsd_client_context_t *);
 __hidden bool uwsd_script_bodydata(uwsd_client_context_t *, const void *, size_t);
 
 #endif /* UWSD_SCRIPT_H */

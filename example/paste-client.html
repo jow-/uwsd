@@ -151,14 +151,18 @@
 					<div class="file ${isNew ? 'new' : ''}">
 						${
 							item.mimetype?.indexOf?.('image/') == 0
-								? `<img src="${attrescape(`${API_BASE_URI}/${item.url}`)}" onclick="openFile('${attrescape(`${API_BASE_URI}/${item.url}`)}')">`
-								: `<div class="thumbnail" onclick="openFile('${attrescape(`${API_BASE_URI}/${item.url}`)}')"><iframe src="${attrescape(`${API_BASE_URI}/${item.url}`)}" frameborder="0"></iframe></div>`
+								? `<img src="${attrescape(`${API_BASE_URI}${item.url}`)}" onclick="openFile('${attrescape(`${API_BASE_URI}${item.url}`)}')">`
+								: `<div class="thumbnail" onclick="openFile('${attrescape(`${API_BASE_URI}/${item.url}`)}')"><iframe src="${attrescape(`${API_BASE_URI}${item.url}`)}" frameborder="0"></iframe></div>`
 						}
 					</div>
 					<div class="metadata">
 						<div>
 							<span>Uploaded:</span>
 							<span>${(new Date(item.uploaded * 1000)).toLocaleString('en-US')}</span>
+						</div>
+						<div>
+							<span>Size:</span>
+							<span>${(+item.filesize/1024).toFixed(1)} KB</span>
 						</div>
 						<div>
 							<span>Transfer duration:</span>
@@ -185,7 +189,7 @@
 
 			function deleteFile(item) {
 				if (confirm(`Do you really want to delete the file "${item.name}"?`))
-					fetch(`${API_BASE_URI}/${item.url}`, { method: 'DELETE' }).then(() => listFiles());
+					fetch(`${API_BASE_URI}${item.url}`, { method: 'DELETE' }).then(() => listFiles());
 			}
 
 			function listFiles(newItem) {
@@ -213,7 +217,7 @@
 
 				body.append('upload', file);
 
-				fetch(`${API_BASE_URI}/upload`, { method: 'POST', body })
+				fetch(`${API_BASE_URI}/upload/${file.name}`, { method: 'PUT', body: file })
 					.then(response => {
 						if (!response.ok)
 							return response.text().then(error => Promise.reject(error));
