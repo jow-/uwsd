@@ -1359,6 +1359,8 @@ http_file_serve(uwsd_client_context_t *cl)
 	struct stat s;
 	int rv = 0;
 
+	uwsd_state_transition(cl, STATE_CONN_RESPONSE);
+
 	if (cl->request_method != HTTP_GET && cl->request_method != HTTP_HEAD)
 		uwsd_http_error_return(cl, 405, "Method Not Allowed",
 			"The used HTTP method is invalid for the requested resource\n");
@@ -1449,6 +1451,8 @@ http_directory_serve(uwsd_client_context_t *cl)
 	char *path = NULL, *url = NULL, *p;
 	struct stat s;
 	int rv = 0;
+
+	uwsd_state_transition(cl, STATE_CONN_RESPONSE);
 
 	if (cl->request_method != HTTP_GET && cl->request_method != HTTP_HEAD)
 		uwsd_http_error_return(cl, 405, "Method Not Allowed",
