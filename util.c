@@ -167,11 +167,8 @@ htmlescape(const char *str)
 
 	copy = calloc(1, len);
 
-	if (!copy) {
-		errno = ENOMEM;
-
+	if (!copy)
 		return NULL;
-	}
 
 	for (i = 0, p = copy; str[i]; i++)
 		if (is_html_special_char(str[i]))

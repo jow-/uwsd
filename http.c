@@ -907,6 +907,76 @@ http_connection_close(uwsd_client_context_t *cl)
 	return false;
 }
 
+static bool
+http_tx(uwsd_client_context_t *cl, uwsd_connection_state_t state)
+{
+	uwsd_connection_t *conn = &cl->downstream;
+	uwsd_connection_t *file = &cl->upstream;
+	ssize_t wlen;
+
+	/* Sending buffered data to stream */
+	if (!uwsd_iov_tx(conn, state))
+		return false; /* failure or partial send */
+
+	/* If we're not serving a HEAD request, then start transmitting file contents */
+	if (cl->request_method != HTTP_HEAD) {
+		/* Use sendfile(2) to transfer contents */
+		if (cl->http.response_flags & HTTP_SEND_FILE) {
+			wlen = client_sendfile(conn, file->ufd.fd, NULL, sizeof(conn->buf.data));
+
+			if (wlen == -1) {
+				/* The sendfile(2) facility is not implemented or not applicable,
+				 * remain in send state but handle next iteration using simple
+				 * buffer copy */
+				if (errno == EINVAL || errno == ENOSYS) {
+					uwsd_http_debug(cl, "sendfile(): %m - falling back to recv()/send()");
+
+					cl->http.response_flags &= ~HTTP_SEND_FILE;
+					cl->http.response_flags |= HTTP_SEND_COPY;
+				}
+
+				/* A fatal sendfile(2) error. Since we already sent the response
+				 * header portion of the reply, simply drop the connection instead
+				 * of emitting an HTTP 500 error */
+				else if (errno != EAGAIN) {
+					client_free(cl, "downstream sendfile error: %m");
+				}
+
+				return false; /* failure */
+			}
+
+			/* Remain in send state as long as sendfile(2) transferred data */
+			if (wlen > 0)
+				return false; /* partial send */
+		}
+
+		/* Use buffer copy to transfer contents */
+		else if (cl->http.response_flags & HTTP_SEND_COPY) {
+			do {
+				if (!uwsd_io_recv(file))
+					return false; /* failure */
+			} while (errno == EINTR);
+
+			/* Remain in send state as long as there is data to transmit */
+			if (uwsd_io_pending(file)) {
+				uwsd_iov_put(cl, uwsd_io_getbuf(file), uwsd_io_pending(file));
+
+				return false; /* partial send */
+			}
+		}
+	}
+
+	/* Close connection? */
+	if (http_connection_close(cl))
+		return false; /* client context freed */
+
+	http_state_reset(cl, STATE_HTTP_REQUEST_METHOD);
+	uwsd_state_transition(cl, STATE_CONN_IDLE);
+	uwsd_io_flush(conn);
+
+	return true; /* all done */
+}
+
 __hidden char *
 uwsd_http_header_lookup(uwsd_client_context_t *cl, const char *name)
 {
@@ -938,29 +1008,16 @@ uwsd_http_header_contains(uwsd_client_context_t *cl, const char *name, const cha
 }
 
 __hidden bool
-uwsd_http_reply_send(uwsd_client_context_t *cl, bool error)
+uwsd_http_reply_send(uwsd_client_context_t *cl, uint32_t flags)
 {
 	uwsd_connection_t *conn = &cl->downstream;
 
 	uwsd_iov_put(cl,
 		uwsd_io_getbuf(conn), uwsd_io_offset(conn));
 
-	if (error)
-		cl->http.response_flags |= HTTP_WANT_CLOSE;
+	cl->http.response_flags |= flags;
 
-	cl->http.response_flags |= HTTP_SEND_COPY;
-
-	if (!uwsd_iov_tx(conn, STATE_CONN_RESPONSE))
-		return false; /* failure or partial send */
-
-	if (http_connection_close(cl))
-		return false;
-
-	http_state_reset(cl, STATE_HTTP_REQUEST_METHOD);
-	uwsd_state_transition(cl, STATE_CONN_IDLE);
-	uwsd_io_flush(conn);
-
-	return true;
+	return http_tx(cl, STATE_CONN_RESPONSE);
 }
 
 __hidden size_t __attribute__((__format__ (__printf__, 4, 0)))
@@ -1250,23 +1307,20 @@ http_proxy_connect(uwsd_client_context_t *cl)
 	return true;
 }
 
-static bool
+static int
 send_file(uwsd_client_context_t *cl, const char *path, const char *type, struct stat *s)
 {
-	uwsd_connection_t *conn = &cl->downstream;
 	char szbuf[sizeof("18446744073709551615")];
 	char *cstype = NULL;
+	uint32_t reply_flags = 0;
 
-	if (!(s->st_mode & S_IROTH) || strrchr(path, '/')[1] == '.') {
-		errno = EACCES;
-
-		return false;
-	}
+	if (!(s->st_mode & S_IROTH) || strrchr(path, '/')[1] == '.')
+		return -EACCES;
 
 	cl->upstream.ufd.fd = open(path, O_RDONLY);
 
 	if (cl->upstream.ufd.fd == -1)
-		return false;
+		return -errno;
 
 	if (uwsd_file_if_range(cl, s) &&
 	    uwsd_file_if_match(cl, s) &&
@@ -1290,24 +1344,20 @@ send_file(uwsd_client_context_t *cl, const char *path, const char *type, struct 
 			"Connection", (cl->http.request_flags & HTTP_WANT_CLOSE) ? "close" : NULL,
 			UWSD_HTTP_REPLY_EOH);
 
+		reply_flags |= HTTP_SEND_FILE;
+
 		free(cstype);
 	}
 
-	uwsd_iov_put(cl,
-		uwsd_io_getbuf(conn), uwsd_io_offset(conn));
-
-	cl->http.response_flags |= HTTP_SEND_FILE;
-	uwsd_state_transition(cl, STATE_CONN_RESPONSE);
-
-	return true;
+	return uwsd_http_reply_send(cl, reply_flags);
 }
 
 static bool
 http_file_serve(uwsd_client_context_t *cl)
 {
 	char *path = cl->action->data.file.path;
-	bool rv = false;
 	struct stat s;
+	int rv = 0;
 
 	if (cl->request_method != HTTP_GET && cl->request_method != HTTP_HEAD)
 		uwsd_http_error_return(cl, 405, "Method Not Allowed",
@@ -1327,11 +1377,12 @@ http_file_serve(uwsd_client_context_t *cl)
 
 	rv = send_file(cl, path, cl->action->data.file.content_type, &s);
 
-	switch (rv ? 0 : errno) {
-	case 0:      return true;
-	case EACCES: goto error403;
-	case ENOENT: goto error404;
-	default:     goto error500;
+	switch (rv) {
+	case 1:       return true;
+	case 0:       return false;
+	case -EACCES: goto error403;
+	case -ENOENT: goto error404;
+	default:      goto error500;
 	}
 
 error403:
@@ -1344,7 +1395,7 @@ error404:
 
 error500:
 	uwsd_http_error_return(cl, 500, "Internal Server Error",
-		"Unable to serve requested path: %m\n");
+		"Unable to serve requested path: %s\n", strerror(-rv));
 }
 
 static char *
@@ -1396,8 +1447,8 @@ http_directory_serve(uwsd_client_context_t *cl)
 	const char *type = cl->action->data.directory.content_type;
 	char *base = cl->action->data.directory.path;
 	char *path = NULL, *url = NULL, *p;
-	bool rv = false;
 	struct stat s;
+	int rv = 0;
 
 	if (cl->request_method != HTTP_GET && cl->request_method != HTTP_HEAD)
 		uwsd_http_error_return(cl, 405, "Method Not Allowed",
@@ -1452,11 +1503,12 @@ http_directory_serve(uwsd_client_context_t *cl)
 		rv = send_file(cl, path, NULL, &s);
 	}
 
-	switch (rv ? 0 : errno) {
-	case 0:      goto success;
-	case EACCES: goto error403;
-	case ENOENT: goto error404;
-	default:     goto error500;
+	switch (rv) {
+	case 0:       goto success;
+	case 1:       goto success;
+	case -EACCES: goto error403;
+	case -ENOENT: goto error404;
+	default:      goto error500;
 	}
 
 error403:
@@ -1478,13 +1530,13 @@ error500:
 	free(url);
 
 	uwsd_http_error_return(cl, 500, "Internal Server Error",
-		"Unable to serve requested path: %m\n");
+		"Unable to serve requested path: %s\n", strerror(-rv));
 
 success:
 	free(path);
 	free(url);
 
-	return true;
+	return (rv > 0);
 }
 
 static bool
@@ -1651,69 +1703,7 @@ uwsd_http_state_response_timeout(uwsd_client_context_t *cl, uwsd_connection_stat
 __hidden void
 uwsd_http_state_response_send(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
-	uwsd_connection_t *conn = &cl->downstream;
-	uwsd_connection_t *file = &cl->upstream;
-	ssize_t wlen;
-
-	/* Sending buffered data to stream */
-	if (!uwsd_iov_tx(conn, state))
-		return; /* failure or partial send */
-
-	/* If we're not serving a HEAD request, then start transmitting file contents */
-	if (cl->request_method != HTTP_HEAD) {
-		/* Use sendfile(2) to transfer contents */
-		if (cl->http.response_flags & HTTP_SEND_FILE) {
-			wlen = client_sendfile(conn, file->ufd.fd, NULL, sizeof(conn->buf.data));
-
-			if (wlen == -1) {
-				/* The sendfile(2) facility is not implemented or not applicable,
-				 * remain in send state but handle next iteration using simple
-				 * buffer copy */
-				if (errno == EINVAL || errno == ENOSYS) {
-					uwsd_http_debug(cl, "sendfile(): %m - falling back to recv()/send()");
-
-					cl->http.response_flags &= ~HTTP_SEND_FILE;
-					cl->http.response_flags |= HTTP_SEND_COPY;
-				}
-
-				/* A fatal sendfile(2) error. Since we already sent the response
-				 * header portion of the reply, simply drop the connection instead
-				 * of emitting an HTTP 500 error */
-				else if (errno != EAGAIN) {
-					client_free(cl, "downstream sendfile error: %m");
-				}
-
-				return;
-			}
-
-			/* Remain in send state as long as sendfile(2) transferred data */
-			if (wlen > 0)
-				return;
-		}
-
-		/* Use buffer copy to transfer contents */
-		else if (cl->http.response_flags & HTTP_SEND_COPY) {
-			do {
-				if (!uwsd_io_recv(file))
-					return; /* failure */
-			} while (errno == EINTR);
-
-			/* Remain in send state as long as there is data to transmit */
-			if (uwsd_io_pending(file)) {
-				uwsd_iov_put(cl, uwsd_io_getbuf(file), uwsd_io_pending(file));
-
-				return;
-			}
-		}
-	}
-
-	/* Close connection? */
-	if (http_connection_close(cl))
-		return;
-
-	http_state_reset(cl, STATE_HTTP_REQUEST_METHOD);
-	uwsd_state_transition(cl, STATE_CONN_IDLE);
-	uwsd_io_flush(conn);
+	http_tx(cl, state);
 }
 
 /* when upstream connect takes too long */
