@@ -19,6 +19,7 @@
 #include <inttypes.h>
 #include <time.h>
 #include <fcntl.h>
+#include <errno.h>
 
 #include <sys/stat.h>
 
@@ -30,6 +31,7 @@
 #include "http.h"
 #include "mimetypes.h"
 #include "config.h"
+#include "io.h"
 
 __hidden const char *
 uwsd_file_mime_lookup(const char *path)
@@ -299,7 +301,7 @@ list_entries(FILE *tmp, struct dirent **files, int count,
 	}
 }
 
-__hidden bool
+__hidden int
 uwsd_file_directory_list(uwsd_client_context_t *cl, const char *physpath, const char *urlpath)
 {
 	const char *type = cl->action->data.directory.content_type;
@@ -322,12 +324,12 @@ uwsd_file_directory_list(uwsd_client_context_t *cl, const char *physpath, const 
 	tmp = (fd > -1) ? fdopen(fd, "r+") : tmpfile();
 
 	if (!tmp)
-		return false;
+		return -errno;
 
 	title = htmlescape(urlpath);
 
 	if (!title)
-		return false;
+		return -ENOMEM;
 
 	fprintf(tmp,
 		"<html><head><title>Index of %1$s/</title></head>"
@@ -346,9 +348,11 @@ uwsd_file_directory_list(uwsd_client_context_t *cl, const char *physpath, const 
 	cl->upstream.ufd.fd = dup(fileno(tmp));
 
 	if (cl->upstream.ufd.fd == -1) {
+		int err = errno;
+
 		fclose(tmp);
 
-		return false;
+		return -err;
 	}
 
 	snprintf(szbuf, sizeof(szbuf), "%lu", ftell(tmp));
@@ -364,9 +368,5 @@ uwsd_file_directory_list(uwsd_client_context_t *cl, const char *physpath, const 
 		"Connection", (cl->http.request_flags & HTTP_WANT_CLOSE) ? "close" : NULL,
 		UWSD_HTTP_REPLY_EOH);
 
-	cl->http.response_flags |= HTTP_SEND_FILE;
-
-	uwsd_state_transition(cl, STATE_CONN_RESPONSE);
-
-	return true;
+	return uwsd_http_reply_send(cl, HTTP_SEND_FILE);
 }

@@ -23,9 +23,11 @@
 #include <ctype.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <limits.h>
 
 #include <arpa/inet.h>
 #include <sys/wait.h>
+#include <sys/sendfile.h>
 
 #include <libubox/uloop.h>
 #include <ucode/compiler.h>
@@ -97,6 +99,7 @@ typedef struct {
 		uint8_t data[16384];
 	} buf;
 	uc_value_t *req, *hdr, *conn, *data, *subproto;
+	uc_value_t *recv_fp;
 	struct {
 		uwsd_ws_msg_format_t format;
 		union {
@@ -564,6 +567,8 @@ script_conn_close(script_connection_t *conn, uint16_t code, const char *msg)
 	ucv_clear(&conn->subproto);
 	ucv_clear(&conn->conn);
 
+	ucv_clear(&conn->recv_fp);
+
 	uloop_fd_delete(&conn->ufd);
 	list_del(&conn->list);
 
@@ -634,12 +639,138 @@ script_conn_http_request(script_connection_t *conn)
 	return true;
 }
 
+static uc_resource_type_t *
+uc_script_acquire_file_resource(uc_vm_t *vm)
+{
+	uc_resource_type_t *restype;
+	uc_cfn_ptr_t requirefn;
+
+	restype = ucv_resource_type_lookup(vm, "fs.file");
+
+	if (!restype) {
+		requirefn = uc_stdlib_function("require");
+
+		uc_vm_stack_push(vm, ucv_string_new("fs"));
+		ucv_put(requirefn(vm, 1));
+
+		restype = ucv_resource_type_lookup(vm, "fs.file");
+	}
+
+	return restype;
+}
+
+static uc_value_t *
+uv_to_handle(uc_vm_t *vm, uc_value_t *uv)
+{
+	uc_resource_type_t *filetype = uc_script_acquire_file_resource(vm);
+	int fd = -1;
+
+	/* accept file and process handles as-is */
+	if (ucv_resource_data(uv, "fs.file") || ucv_resource_data(uv, "fs.proc"))
+		return ucv_get(uv);
+
+	/* convert valid descriptor numbers to fs.file instances */
+	if (ucv_type(uv) == UC_INTEGER) {
+		fd = ucv_int64_get(uv);
+
+		if (errno != 0 || fd < 0)
+			return NULL;
+	}
+
+	/* convert other objects implementing fileno() to fs.file instances */
+	else {
+		uc_value_t *fno = ucv_property_get(uv, "fileno");
+
+		if (!ucv_is_callable(fno))
+			return NULL;
+
+		uc_vm_stack_push(vm, ucv_get(fno));
+		uc_vm_stack_push(vm, ucv_get(uv));
+
+		if (uc_vm_call(vm, true, 0) != EXCEPTION_NONE)
+			return NULL;
+
+		uc_value_t *fp = uc_vm_stack_pop(vm);
+
+		fd = ucv_int64_get(fp);
+
+		if (errno != 0 || fd < 0)
+			return NULL;
+	}
+
+	int flags = fcntl(fd, F_GETFL);
+
+	if (flags != -1) {
+		const char *mode;
+
+		switch (flags & O_ACCMODE) {
+		case O_RDONLY: mode = "r";                              break;
+		case O_WRONLY: mode = (flags & O_APPEND) ? "a"  : "w";  break;
+		default:       mode = (flags & O_APPEND) ? "a+" : "w+"; break;
+		}
+
+		FILE *fp = fdopen(fd, mode);
+
+		if (fp != NULL)
+			return uc_resource_new(filetype, fp);
+	}
+
+	return NULL;
+}
+
+static FILE *
+uv_to_stdio(uc_value_t *uv)
+{
+	FILE *fp;
+
+	if ((fp = ucv_resource_data(uv, "fs.file")) != NULL)
+		return fp;
+
+	if ((fp = ucv_resource_data(uv, "fs.proc")) != NULL)
+		return fp;
+
+	return NULL;
+}
+
+static int
+uv_to_fd(uc_value_t *uv)
+{
+	FILE *fp = uv_to_stdio(uv);
+
+	return fp ? fileno(fp) : -1;
+}
+
 static bool
 script_conn_http_body(script_connection_t *conn, const void *data, size_t len)
 {
 	uc_vm_t *vm = &conn->ctx->vm;
 	uc_exception_type_t ex;
 	uc_value_t *ctx;
+
+	/* handler registered receive descriptor, store data directly */
+	FILE *fp = uv_to_stdio(conn->recv_fp);
+	if (fp != NULL) {
+		if (len > 0) {
+			size_t wlen = fwrite(data, 1, len, fp);
+
+			if (wlen < len || ferror(fp)) {
+				http_reply_send(conn,
+					500, "Internal Server Error",
+					"Target file write error",
+					"Connection", "close",
+					UWSD_HTTP_REPLY_EOH
+				);
+
+				script_conn_close(conn, 0, NULL);
+
+				return false;
+			}
+
+			return true;
+		}
+
+		fflush(fp);
+	}
 
 	if (!conn->ctx->onBody)
 		return true;
@@ -901,6 +1032,117 @@ uc_script_request_info(uc_vm_t *vm, size_t nargs)
 }
 
 static uc_value_t *
+uc_script_store(uc_vm_t *vm, size_t nargs)
+{
+	script_connection_t **conn = uc_fn_this("uwsd.connection");
+	uc_value_t *handle = uc_fn_arg(0);
+	uc_value_t *fp = uv_to_handle(vm, handle);
+
+	if (!fp) {
+		if (vm->exception.type == EXCEPTION_NONE) {
+			char *s = ucv_to_string(vm, handle);
+
+			uc_vm_raise_exception(vm, EXCEPTION_TYPE,
+				"Expecting valid file handle, got '%s'", s);
+
+			free(s);
+		}
+
+		return NULL;
+	}
+
+	ucv_put((*conn)->recv_fp);
+
+	(*conn)->recv_fp = fp;
+
+	return ucv_boolean_new(true);
+}
+
+static ssize_t
+copy_sendfile(int in_fd, script_connection_t *conn, ssize_t len)
+{
+	ssize_t copied = 0;
+
+	while (len > 0) {
+		ssize_t wlen = sendfile(conn->ufd.fd, in_fd, NULL, len);
+
+		if (wlen < 0)
+			return -1;
+
+		len -= wlen;
+		copied += wlen;
+	}
+
+	return copied;
+}
+
+static ssize_t
+copy_splice(int in_fd, script_connection_t *conn)
+{
+	ssize_t copied = 0;
+
+	while (true) {
+		ssize_t wlen = splice(in_fd, NULL, conn->ufd.fd, NULL, SSIZE_MAX, 0);
+
+		if (wlen < 0)
+			return -1;
+
+		if (wlen == 0)
+			break;
+
+		copied += wlen;
+	}
+
+	return copied;
+}
+
+static ssize_t
+copy_writev(int in_fd, script_connection_t *conn)
+{
+	ssize_t copied = 0;
+
+	while (true) {
+		struct iovec iov = {
+			.iov_base = conn->buf.data,
+			.iov_len = sizeof(conn->buf.data)
+		};
+
+		ssize_t rlen = readv(in_fd, &iov, 1);
+
+		if (rlen == -1) {
+			if (errno == EINTR)
+				continue;
+
+			if (errno == EAGAIN)
+				break;
+
+			return -1;
+		}
+
+		if (rlen == 0)
+			break;
+
+		while (iov.iov_len > 0) {
+			ssize_t wlen = writev(conn->ufd.fd, &iov, 1);
+
+			if (wlen == -1) {
+				if (errno == EINTR)
+					continue;
+
+				return -1;
+			}
+
+			iov.iov_base += wlen;
+			iov.iov_len -= wlen;
+
+			copied += wlen;
+		}
+	}
+
+	return copied;
+}
+
+static uc_value_t *
 uc_script_reply(uc_vm_t *vm, size_t nargs)
 {
 	script_connection_t **conn = uc_fn_this("uwsd.connection");
@@ -949,22 +1191,38 @@ uc_script_reply(uc_vm_t *vm, size_t nargs)
 	if (!found)
 		printbuf_strappend(buf, "Content-Type: application/octet-stream\r\n");
 
-	ucv_object_get(header, "Content-Length", &found);
+	uc_value_t *handle = uv_to_handle(vm, body);
+	ssize_t handle_len = -1;
 
-	if (!found) {
-		lenoff = printbuf_length(buf) + strlen("Content-Length: ");
-		printbuf_strappend(buf, "Content-Length: 00000000000000000000\r\n");
+	if (handle == NULL) {
+		ucv_object_get(header, "Content-Length", &found);
+
+		if (!found) {
+			lenoff = printbuf_length(buf) + strlen("Content-Length: ");
+			printbuf_strappend(buf, "Content-Length: 00000000000000000000\r\n");
+		}
+
+		printbuf_strappend(buf, "\r\n");
+		n = printbuf_length(buf);
+
+		if (body)
+			ucv_to_stringbuf(vm, buf, body, false);
+
+		if (lenoff) {
+			snprintf(buf->buf + lenoff, 21, "%-20zd", printbuf_length(buf) - n);
+			buf->buf[lenoff + 20] = '\r';
+		}
 	}
+	else {
+		int fd = uv_to_fd(handle);
+		struct stat s;
 
-	printbuf_strappend(buf, "\r\n");
-	n = printbuf_length(buf);
+		if (fstat(fd, &s) == 0 && S_ISREG(s.st_mode)) {
+			handle_len = s.st_size;
+			sprintbuf(buf, "Content-Length: %zd\r\n", handle_len);
+		}
 
-	if (body)
-		ucv_to_stringbuf(vm, buf, body, false);
-
-	if (lenoff) {
-		snprintf(buf->buf + lenoff, 21, "%-20zd", printbuf_length(buf) - n);
-		buf->buf[lenoff + 20] = '\r';
+		printbuf_strappend(buf, "\r\n");
 	}
 
 	for (p = buf->buf, n = printbuf_length(buf); n > 0; ) {
@@ -984,6 +1242,30 @@ uc_script_reply(uc_vm_t *vm, size_t nargs)
 
 	printbuf_free(buf);
 
+	if (handle != NULL) {
+		int fd = uv_to_fd(handle);
+
+		if (fd != -1) {
+			ssize_t copied;
+
+			if (handle_len > -1)
+				copied = copy_sendfile(fd, *conn, handle_len);
+			else
+				copied = -1, errno = ENOSYS;
+
+			if (copied == -1 && (errno == ENOSYS || errno == EINVAL))
+				copied = copy_splice(fd, *conn);
+
+			if (copied == -1 && errno == EINVAL)
+				copied = copy_writev(fd, *conn);
+
+			if (copied == -1)
+				uc_vm_raise_exception(vm, EXCEPTION_RUNTIME, "send error: %m");
+		}
+
+		ucv_put(handle);
+	}
+
 	*conn = NULL;
 
 	return ucv_boolean_new(!n);
@@ -997,6 +1279,7 @@ static const uc_function_list_t conn_fns[] = {
 	{ "info",    uc_script_request_info },
 	{ "data",    uc_script_data },
 
+	{ "store",   uc_script_store },
 	{ "reply",   uc_script_reply },
 	{ "accept",  uc_script_accept },
 	{ "expect",  uc_script_expect },
@@ -1055,24 +1338,86 @@ uc_script_sha1digest(uc_vm_t *vm, size_t nargs)
 	return ucv_string_new(digest);
 }
 
-static uc_resource_type_t *
-uc_script_acquire_file_resource(uc_vm_t *vm)
+static uc_value_t *
+uc_script_uuid(uc_vm_t *vm, size_t nargs)
 {
-	uc_resource_type_t *restype;
-	uc_cfn_ptr_t requirefn;
+	uc_value_t *seedval = uc_fn_arg(0);
+	char uuid[37], *p = uuid;
+	unsigned int seed;
 
-	restype = ucv_resource_type_lookup(vm, "fs.file");
+	if (seedval == NULL) {
+		seed = time(NULL);
+	}
+	else {
+		union { double d; int64_t i; uint64_t u; } conv;
+		uint8_t *u8;
+		size_t len;
 
-	if (!restype) {
-		requirefn = uc_stdlib_function("require");
+		seed = ucv_type(seedval);
 
-		uc_vm_stack_push(vm, ucv_string_new("fs"));
-		ucv_put(requirefn(vm, 1));
+		switch (seed) {
+		case UC_STRING:
+			u8 = (uint8_t *)ucv_string_get(seedval);
+			len = ucv_string_length(seedval);
+			break;
 
-		restype = ucv_resource_type_lookup(vm, "fs.file");
+		case UC_INTEGER:
+			conv.i = ucv_int64_get(seedval);
+
+			if (errno == ERANGE) {
+				seed *= 2;
+				conv.u = ucv_uint64_get(seedval);
+			}
+
+			u8 = (uint8_t *)&conv.u;
+			len = sizeof(conv.u);
+			break;
+
+		case UC_DOUBLE:
+			conv.d = ucv_double_get(seedval);
+
+			u8 = (uint8_t *)&conv.u;
+			len = sizeof(conv.u);
+			break;
+
+		default:
+			u8 = (uint8_t *)&seedval;
+			len = sizeof(seedval);
+			break;
+		}
+
+		while (len > 0) {
+			seed = seed * 129 + (*u8++) + LH_PRIME;
+			len--;
+		}
 	}
 
-	return restype;
+	srand(seed);
+
+	for (size_t n = 0; n < 16; n++) {
+		int r = rand() % 256;
+
+		switch (n) {
+		case 6:  sprintf(p, "4%x", r % 16);                    break;
+		case 8:  sprintf(p, "%x%x", 8 + (rand() % 4), r % 16); break;
+		default: sprintf(p, "%02x", r);                        break;
+		}
+
+		p += 2;
+
+		switch (n) {
+		case 3:
+		case 5:
+		case 7:
+		case 9:
+			*p++ = '-';
+			break;
+		}
+	}
+
+	*p = '\0';
+
+	return ucv_string_new_length(uuid, 36);
 }
 
 typedef struct {
@@ -1750,6 +2095,7 @@ uc_script_api_init(uc_vm_t *vm)
 
 	ucv_object_add(api, "connections", ucv_cfunction_new("connections", uc_script_connections));
 	ucv_object_add(api, "sha1digest", ucv_cfunction_new("sha1digest", uc_script_sha1digest));
+	ucv_object_add(api, "uuid", ucv_cfunction_new("uuid", uc_script_uuid));
 	ucv_object_add(api, "spawn", ucv_cfunction_new("spawn", uc_script_spawn));
 
 	ucv_object_add(uc_vm_scope_get(vm), "uwsd", api);
@@ -2114,7 +2460,7 @@ uwsd_script_free(uwsd_action_t *action)
 }
 
 __hidden bool
-uwsd_script_request(uwsd_client_context_t *cl, int downstream)
+uwsd_script_request(uwsd_client_context_t *cl)
 {
 	uint16_t tv[cl->http_num_headers], lv[cl->http_num_headers];
 	struct iovec iov[(7 + cl->http_num_headers) * 3];
