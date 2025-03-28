@@ -253,7 +253,7 @@ ws_frame_send(script_connection_t *conn, uwsd_ws_opcode_t opcode, const void *da
 	return true;
 }
 
-static void
+static void __attribute__((format (printf, 4, 0)))
 ws_error_send(script_connection_t *conn, bool terminate, uint16_t code, const char *msg, ...)
 {
 	va_list ap;
@@ -273,7 +273,7 @@ ws_error_send(script_connection_t *conn, bool terminate, uint16_t code, const ch
 		script_conn_close(conn, ntohs(code), (char *)conn->buf.data + 2);
 }
 
-static void
+static void __attribute__((format (printf, 4, 0)))
 http_reply_send(script_connection_t *conn, uint16_t code, const char *reason, const char *msg, ...)
 {
 	va_list ap;

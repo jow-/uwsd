@@ -62,7 +62,7 @@ ws_state_transition(uwsd_client_context_t *cl, uwsd_ws_state_t state)
 	cl->ws.buflen = 0;
 }
 
-static void __attribute__ ((format (printf, 3, 0)))
+static void __attribute__((format (printf, 3, 0)))
 ws_terminate(uwsd_client_context_t *cl, uint16_t rcode, const char *msg, ...)
 {
 	va_list ap;
@@ -606,7 +606,7 @@ uwsd_ws_reply_send(uwsd_client_context_t *cl, uwsd_ws_opcode_t opcode, const voi
 	return ws_downstream_tx(cl, opcode, true, data, datalen);
 }
 
-__hidden void
+__hidden void __attribute__((format (printf, 3, 0)))
 uwsd_ws_connection_close(uwsd_client_context_t *cl, uint16_t code, const char *message, ...)
 {
 	va_list ap;

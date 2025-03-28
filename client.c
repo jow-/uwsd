@@ -70,7 +70,7 @@ client_create(int fd, uwsd_listen_t *listen, struct sockaddr *peeraddr, size_t a
 	uwsd_state_init(cl, STATE_CONN_ACCEPT_RECV);
 }
 
-__hidden void
+__hidden void __attribute__((format (printf, 2, 0)))
 client_free(uwsd_client_context_t *cl, const char *reason, ...)
 {
 #ifndef NDEBUG

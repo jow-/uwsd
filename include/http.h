@@ -96,6 +96,7 @@ __hidden size_t uwsd_http_reply_buffer_varg(char *, size_t, double, uint16_t, co
 __attribute__((__format__ (__printf__, 4, 0)))
 __hidden size_t uwsd_http_reply(uwsd_client_context_t *, uint16_t, const char *, const char *, ...);
 
+__attribute__((__format__ (__printf__, 6, 0)))
 static inline size_t
 uwsd_http_reply_buffer(void *buf, size_t buflen, double http_version,
                        uint16_t code, const char *reason, const char *fmt, ...)
