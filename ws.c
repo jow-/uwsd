@@ -612,15 +612,16 @@ __hidden void
 uwsd_ws_connection_close(uwsd_client_context_t *cl, uint16_t code, const char *message, ...)
 {
 	va_list ap;
-	char *nl;
+	char *s, *nl;
 	int len;
 
-	cl->ws.error.code = code;
-	free(cl->ws.error.msg);
-
 	va_start(ap, message);
-	len = xvasprintf(&cl->ws.error.msg, message, ap);
+	len = xvasprintf(&s, message, ap);
 	va_end(ap);
+
+	free(cl->ws.error.msg);
+	cl->ws.error.code = code;
+	cl->ws.error.msg = s;
 
 	if (len > 123)
 		len = 123;
