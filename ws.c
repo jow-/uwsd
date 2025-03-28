@@ -37,10 +37,10 @@
 #include "teeny-sha1.h"
 
 
+#ifndef NDEBUG
 static const char *
 ws_state_name(uwsd_ws_state_t state)
 {
-#ifndef NDEBUG
 # define STATE(name)	#name
 	const char *statenames[] = {
 		WS_STATE_LIST
@@ -48,10 +48,8 @@ ws_state_name(uwsd_ws_state_t state)
 
 	return statenames[state];
 # undef STATE
-#else
-	return NULL;
-#endif
 }
+#endif
 
 static void
 ws_state_transition(uwsd_client_context_t *cl, uwsd_ws_state_t state)
