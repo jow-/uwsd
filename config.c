@@ -649,7 +649,7 @@ config_parse_value(const char **input, const config_prop_t *prop, void *base)
 		if (!p)
 			return false;
 
-		for (l = (char *[]){
+		for (e = NULL, l = (char *[]){
 			"", "\1", "true", "\1", "yes", "\1", "on", "\1", "enabled", "\1",
 			"false", "\0", "no", "\0", "off", "\0", "disabled", "\0",
 			NULL, NULL
