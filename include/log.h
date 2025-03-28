@@ -39,10 +39,10 @@ typedef enum {
 extern uwsd_log_priority_t uwsd_logging_priority;
 extern unsigned int uwsd_logging_channels;
 
-typedef struct uwsd_client_context uwsd_client_context_t;
+struct uwsd_client_context;
 
 __hidden __attribute__((format(printf, 4, 0))) void
-uwsd_log(uwsd_log_priority_t, uwsd_log_channel_t, uwsd_client_context_t *, const char *, ...);
+uwsd_log(uwsd_log_priority_t, uwsd_log_channel_t, struct uwsd_client_context *, const char *, ...);
 
 
 #ifdef NDEBUG

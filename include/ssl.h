@@ -20,8 +20,8 @@
 #include <sys/uio.h>
 
 
-typedef struct uwsd_client_context uwsd_client_context_t;
-typedef struct uwsd_connection uwsd_connection_t;
+struct uwsd_client_context;
+struct uwsd_connection;
 
 typedef enum {
 	UWSD_VERIFY_PEER_DISABLED,
@@ -58,21 +58,21 @@ __hidden void uwsd_ssl_ctx_free(uwsd_ssl_t *);
 __hidden bool uwsd_ssl_client_ctx_init(uwsd_ssl_client_t *);
 __hidden void uwsd_ssl_client_ctx_free(uwsd_ssl_client_t *);
 
-__hidden bool uwsd_ssl_init(uwsd_client_context_t *);
-__hidden void uwsd_ssl_free(uwsd_client_context_t *);
-__hidden bool uwsd_ssl_accept(uwsd_client_context_t *);
+__hidden bool uwsd_ssl_init(struct uwsd_client_context *);
+__hidden void uwsd_ssl_free(struct uwsd_client_context *);
+__hidden bool uwsd_ssl_accept(struct uwsd_client_context *);
 
-__hidden bool uwsd_ssl_client_init(uwsd_client_context_t *);
-__hidden void uwsd_ssl_client_free(uwsd_client_context_t *);
-__hidden bool uwsd_ssl_client_connect(uwsd_client_context_t *);
+__hidden bool uwsd_ssl_client_init(struct uwsd_client_context *);
+__hidden void uwsd_ssl_client_free(struct uwsd_client_context *);
+__hidden bool uwsd_ssl_client_connect(struct uwsd_client_context *);
 
-__hidden ssize_t uwsd_ssl_pending(uwsd_connection_t *);
-__hidden ssize_t uwsd_ssl_recv(uwsd_connection_t *, void *, size_t);
-__hidden ssize_t uwsd_ssl_sendv(uwsd_connection_t *, struct iovec *, size_t);
-__hidden ssize_t uwsd_ssl_close(uwsd_connection_t *);
+__hidden ssize_t uwsd_ssl_pending(struct uwsd_connection *);
+__hidden ssize_t uwsd_ssl_recv(struct uwsd_connection *, void *, size_t);
+__hidden ssize_t uwsd_ssl_sendv(struct uwsd_connection *, struct iovec *, size_t);
+__hidden ssize_t uwsd_ssl_close(struct uwsd_connection *);
 
-__hidden const char *uwsd_ssl_cipher_name(uwsd_connection_t *);
-__hidden const char *uwsd_ssl_peer_subject_name(uwsd_connection_t *);
-__hidden const char *uwsd_ssl_peer_issuer_name(uwsd_connection_t *);
+__hidden const char *uwsd_ssl_cipher_name(struct uwsd_connection *);
+__hidden const char *uwsd_ssl_peer_subject_name(struct uwsd_connection *);
+__hidden const char *uwsd_ssl_peer_issuer_name(struct uwsd_connection *);
 
 #endif /* UWSD_SSL_H */

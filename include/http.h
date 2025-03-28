@@ -84,8 +84,8 @@ typedef enum {
 #undef STATE
 } uwsd_http_state_t;
 
-typedef struct uwsd_client_context uwsd_client_context_t;
-typedef enum uwsd_connection_state uwsd_connection_state_t;
+struct uwsd_client_context;
+enum uwsd_connection_state;
 
 #define UWSD_HTTP_REPLY_EMPTY	"\127"
 #define UWSD_HTTP_REPLY_EOH		NULL
@@ -94,7 +94,7 @@ __attribute__((__format__ (__printf__, 6, 0)))
 __hidden size_t uwsd_http_reply_buffer_varg(char *, size_t, double, uint16_t, const char *, const char *, va_list);
 
 __attribute__((__format__ (__printf__, 4, 0)))
-__hidden size_t uwsd_http_reply(uwsd_client_context_t *, uint16_t, const char *, const char *, ...);
+__hidden size_t uwsd_http_reply(struct uwsd_client_context *, uint16_t, const char *, const char *, ...);
 
 __attribute__((__format__ (__printf__, 6, 0)))
 static inline size_t
@@ -128,29 +128,29 @@ uwsd_http_reply_buffer(void *buf, size_t buflen, double http_version,
 		return false;													\
 	} while (0)
 
-__hidden char *uwsd_http_header_lookup(uwsd_client_context_t *, const char *);
-__hidden bool uwsd_http_header_contains(uwsd_client_context_t *, const char *, const char *);
+__hidden char *uwsd_http_header_lookup(struct uwsd_client_context *, const char *);
+__hidden bool uwsd_http_header_contains(struct uwsd_client_context *, const char *, const char *);
 
-__hidden bool uwsd_http_reply_send(uwsd_client_context_t *, uint32_t);
+__hidden bool uwsd_http_reply_send(struct uwsd_client_context *, uint32_t);
 
-__hidden void uwsd_http_state_idle_timeout(uwsd_client_context_t *, uwsd_connection_state_t, bool);
+__hidden void uwsd_http_state_idle_timeout(struct uwsd_client_context *, enum uwsd_connection_state, bool);
 
-__hidden void uwsd_http_state_accept(uwsd_client_context_t *, uwsd_connection_state_t, bool);
+__hidden void uwsd_http_state_accept(struct uwsd_client_context *, enum uwsd_connection_state, bool);
 
-__hidden void uwsd_http_state_request_recv(uwsd_client_context_t *, uwsd_connection_state_t, bool);
-__hidden void uwsd_http_state_request_timeout(uwsd_client_context_t *, uwsd_connection_state_t, bool);
+__hidden void uwsd_http_state_request_recv(struct uwsd_client_context *, enum uwsd_connection_state, bool);
+__hidden void uwsd_http_state_request_timeout(struct uwsd_client_context *, enum uwsd_connection_state, bool);
 
-__hidden void uwsd_http_state_response_send(uwsd_client_context_t *, uwsd_connection_state_t, bool);
-__hidden void uwsd_http_state_response_timeout(uwsd_client_context_t *, uwsd_connection_state_t, bool);
+__hidden void uwsd_http_state_response_send(struct uwsd_client_context *, enum uwsd_connection_state, bool);
+__hidden void uwsd_http_state_response_timeout(struct uwsd_client_context *, enum uwsd_connection_state, bool);
 
-__hidden void uwsd_http_state_upstream_connected(uwsd_client_context_t *, uwsd_connection_state_t, bool);
-__hidden void uwsd_http_state_upstream_handshake(uwsd_client_context_t *, uwsd_connection_state_t, bool);
-__hidden void uwsd_http_state_upstream_send(uwsd_client_context_t *, uwsd_connection_state_t, bool);
-__hidden void uwsd_http_state_upstream_recv(uwsd_client_context_t *, uwsd_connection_state_t, bool);
-__hidden void uwsd_http_state_upstream_timeout(uwsd_client_context_t *, uwsd_connection_state_t, bool);
+__hidden void uwsd_http_state_upstream_connected(struct uwsd_client_context *, enum uwsd_connection_state, bool);
+__hidden void uwsd_http_state_upstream_handshake(struct uwsd_client_context *, enum uwsd_connection_state, bool);
+__hidden void uwsd_http_state_upstream_send(struct uwsd_client_context *, enum uwsd_connection_state, bool);
+__hidden void uwsd_http_state_upstream_recv(struct uwsd_client_context *, enum uwsd_connection_state, bool);
+__hidden void uwsd_http_state_upstream_timeout(struct uwsd_client_context *, enum uwsd_connection_state, bool);
 
-__hidden void uwsd_http_state_downstream_send(uwsd_client_context_t *, uwsd_connection_state_t, bool);
-__hidden void uwsd_http_state_downstream_recv(uwsd_client_context_t *, uwsd_connection_state_t, bool);
-__hidden void uwsd_http_state_downstream_timeout(uwsd_client_context_t *, uwsd_connection_state_t, bool);
+__hidden void uwsd_http_state_downstream_send(struct uwsd_client_context *, enum uwsd_connection_state, bool);
+__hidden void uwsd_http_state_downstream_recv(struct uwsd_client_context *, enum uwsd_connection_state, bool);
+__hidden void uwsd_http_state_downstream_timeout(struct uwsd_client_context *, enum uwsd_connection_state, bool);
 
 #endif /* UWSD_HTTP_H */

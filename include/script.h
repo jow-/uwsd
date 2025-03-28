@@ -22,17 +22,17 @@
 #include "util.h"
 #include "listen.h"
 
-typedef struct uwsd_client_context uwsd_client_context_t;
+struct uwsd_client_context;
 
 __hidden int uwsd_script_worker_main(const char *, const char *);
 
 __hidden bool uwsd_script_init(uwsd_action_t *, const char *);
-__hidden bool uwsd_script_connect(uwsd_client_context_t *, const char *);
-__hidden bool uwsd_script_send(uwsd_client_context_t *, const void *, size_t);
-__hidden void uwsd_script_close(uwsd_client_context_t *);
+__hidden bool uwsd_script_connect(struct uwsd_client_context *, const char *);
+__hidden bool uwsd_script_send(struct uwsd_client_context *, const void *, size_t);
+__hidden void uwsd_script_close(struct uwsd_client_context *);
 __hidden void uwsd_script_free(uwsd_action_t *);
 
-__hidden bool uwsd_script_request(uwsd_client_context_t *);
-__hidden bool uwsd_script_bodydata(uwsd_client_context_t *, const void *, size_t);
+__hidden bool uwsd_script_request(struct uwsd_client_context *);
+__hidden bool uwsd_script_bodydata(struct uwsd_client_context *, const void *, size_t);
 
 #endif /* UWSD_SCRIPT_H */

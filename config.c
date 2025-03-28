@@ -44,19 +44,18 @@ typedef enum {
 	NESTED_MULTIPLE,
 } config_type_t;
 
-typedef struct config_block config_block_t;
-typedef struct config_prop config_prop_t;
-
 #define VALUES(...) { .values = (const char *[]){ __VA_ARGS__, NULL } }
 #define SUBSPEC(obj) { .nested = &obj }
 
+
+struct config_block;
 
 typedef struct config_prop {
 	const char *name;
 	config_type_t type;
 	size_t offset;
 	union {
-		const config_block_t *nested;
+		const struct config_block *nested;
 		const char **values;
 	} data;
 } config_prop_t;

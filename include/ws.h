@@ -83,16 +83,16 @@ typedef struct __attribute__((packed)) {
 	uint8_t mask:1;
 } ws_frame_header_t;
 
-typedef struct uwsd_client_context uwsd_client_context_t;
+struct uwsd_client_context;
 
-__hidden bool uwsd_ws_reply_send(uwsd_client_context_t *, uwsd_ws_opcode_t, const void *, size_t);
-__hidden bool uwsd_ws_connection_accept(uwsd_client_context_t *);
-__hidden void uwsd_ws_connection_close(uwsd_client_context_t *, uint16_t, const char *, ...);
+__hidden bool uwsd_ws_reply_send(struct uwsd_client_context *, uwsd_ws_opcode_t, const void *, size_t);
+__hidden bool uwsd_ws_connection_accept(struct uwsd_client_context *);
+__hidden void uwsd_ws_connection_close(struct uwsd_client_context *, uint16_t, const char *, ...);
 
-__hidden void uwsd_ws_state_upstream_connected(uwsd_client_context_t *, uwsd_connection_state_t, bool);
+__hidden void uwsd_ws_state_upstream_connected(struct uwsd_client_context *, uwsd_connection_state_t, bool);
 
-__hidden void uwsd_ws_state_xstream_send(uwsd_client_context_t *, uwsd_connection_state_t, bool);
-__hidden void uwsd_ws_state_xstream_recv(uwsd_client_context_t *, uwsd_connection_state_t, bool);
-__hidden void uwsd_ws_state_xstream_timeout(uwsd_client_context_t *, uwsd_connection_state_t, bool);
+__hidden void uwsd_ws_state_xstream_send(struct uwsd_client_context *, uwsd_connection_state_t, bool);
+__hidden void uwsd_ws_state_xstream_recv(struct uwsd_client_context *, uwsd_connection_state_t, bool);
+__hidden void uwsd_ws_state_xstream_timeout(struct uwsd_client_context *, uwsd_connection_state_t, bool);
 
 #endif /* UWSD_WS_H */

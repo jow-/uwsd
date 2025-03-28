@@ -23,7 +23,7 @@
 #include "util.h"
 
 
-typedef struct uwsd_client_context uwsd_client_context_t;
+struct uwsd_client_context;
 
 #define CONN_STATE_LIST			\
 	STATE(ACCEPT_SEND),			\
@@ -75,12 +75,12 @@ typedef enum {
 typedef struct {
 	uint8_t channels;
 	uint8_t events;
-	void (*io_cb)(uwsd_client_context_t *, uwsd_connection_state_t, bool);
+	void (*io_cb)(struct uwsd_client_context *, uwsd_connection_state_t, bool);
 	uwsd_timeout_kind_t timeout;
-	void (*timeout_cb)(uwsd_client_context_t *, uwsd_connection_state_t, bool);
+	void (*timeout_cb)(struct uwsd_client_context *, uwsd_connection_state_t, bool);
 } uwsd_state_entry_t;
 
-__hidden void uwsd_state_init(uwsd_client_context_t *, uwsd_connection_state_t);
-__hidden void uwsd_state_transition(uwsd_client_context_t *, uwsd_connection_state_t);
+__hidden void uwsd_state_init(struct uwsd_client_context *, uwsd_connection_state_t);
+__hidden void uwsd_state_transition(struct uwsd_client_context *, uwsd_connection_state_t);
 
 #endif /* UWSD_STATE_H */

@@ -22,7 +22,7 @@
 #include "util.h"
 
 
-typedef struct uwsd_client_context uwsd_client_context_t;
+struct uwsd_client_context;
 
 typedef enum {
 	UWSD_AUTH_BASIC,
@@ -47,6 +47,6 @@ typedef struct {
 } uwsd_auth_t;
 
 
-__hidden bool auth_check(uwsd_client_context_t *);
+__hidden bool auth_check(struct uwsd_client_context *);
 
 #endif /* UWSD_AUTH_H */
