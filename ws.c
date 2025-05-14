@@ -463,8 +463,7 @@ ws_handle_frame_payload(uwsd_client_context_t *cl)
 	case OPCODE_PING:
 	case OPCODE_PONG:
 	case OPCODE_CLOSE:
-		memcpy(cl->ws.buf.data + cl->ws.buflen, cl->tx[0].iov_base, cl->tx[0].iov_len);
-		cl->ws.buflen += cl->tx[0].iov_len;
+		memcpy(cl->ws.buf.data + cl->ws.buflen - cl->tx[0].iov_len, cl->tx[0].iov_base, cl->tx[0].iov_len);
 
 		cl->tx[0].iov_base += cl->tx[0].iov_len;
 		cl->tx[0].iov_len = 0;
@@ -569,8 +568,6 @@ uwsd_ws_state_downstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t
 static void
 uwsd_ws_state_downstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t state)
 {
-	size_t len;
-
 	if (!uwsd_io_readahead(&cl->downstream))
 		return; /* failure */
 
@@ -581,20 +578,15 @@ uwsd_ws_state_downstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 		if (cl->ws.state < STATE_WS_PAYLOAD)
 			return; /* await more data */
 
-		if (cl->ws.state == STATE_WS_PAYLOAD) {
+		if (cl->ws.state >= STATE_WS_PAYLOAD) {
 			if (!ws_handle_frame_payload(cl))
 				return; /* partial send or error */
 		}
 
 		if (cl->ws.state == STATE_WS_COMPLETE) {
-			len = cl->ws.buflen;
-
 			ws_state_transition(cl, STATE_WS_HEADER); /* expect next frame */
 
-			if (!ws_handle_frame_payload(cl))
-				return; /* partial send or error */
-
-			if (!ws_handle_frame_completion(cl, cl->ws.buf.data, len))
+			if (!ws_handle_frame_completion(cl, cl->ws.buf.data, cl->ws.len))
 				return; /* partial send or error */
 		}
 	}
