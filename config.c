@@ -266,6 +266,12 @@ static const config_block_t serve_directory_spec = {
 			offsetof(uwsd_action_t, data.directory.content_type), { 0 } },
 		{ "index-filename", LIST,
 			offsetof(uwsd_action_t, data.directory.index_filenames), { 0 } },
+		{ "error-403-filename", STRING,
+			offsetof(uwsd_action_t, data.directory.error_403_filename), { 0 } },
+		{ "error-404-filename", STRING,
+			offsetof(uwsd_action_t, data.directory.error_404_filename), { 0 } },
+		{ "error-500-filename", STRING,
+			offsetof(uwsd_action_t, data.directory.error_500_filename), { 0 } },
 		{ "directory-listing", BOOLEAN,
 			offsetof(uwsd_action_t, data.directory.directory_listing), { 0 } },
 		{ 0 }

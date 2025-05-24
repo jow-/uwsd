@@ -1353,6 +1353,43 @@ send_file(uwsd_client_context_t *cl, const char *path, const char *type, struct 
 }
 
 static bool
+http_error_serve(uwsd_client_context_t *cl, int error, const char *msg, const char *description)
+{
+	const char *path;
+	struct stat s;
+
+	switch (error) {
+	case 403:
+		path = cl->action->data.directory.error_403_filename;
+		break;
+	case 404:
+		path = cl->action->data.directory.error_404_filename;
+		break;
+	case 500:
+		path = cl->action->data.directory.error_500_filename;
+		break;
+	}
+
+	if (path) {
+		char *base = cl->action->data.directory.path;
+
+		path = pathexpand(path, base);
+
+		if (!stat(path, &s) && S_ISREG(s.st_mode)) {
+			int rv = send_file(cl, path, cl->action->data.file.content_type, &s);
+
+			switch (rv) {
+			case 1:       return true;
+			case 0:       return false;
+			default:      break;
+			}
+		}
+	}
+
+	uwsd_http_error_return(cl, error, msg, description);
+}
+
+static bool
 http_file_serve(uwsd_client_context_t *cl)
 {
 	char *path = cl->action->data.file.path;
@@ -1388,16 +1425,16 @@ http_file_serve(uwsd_client_context_t *cl)
 	}
 
 error403:
-	uwsd_http_error_return(cl, 403, "Permission Denied",
+	return http_error_serve(cl, 403, "Permission Denied",
 		"Access to the requested path is forbidden");
 
 error404:
-	uwsd_http_error_return(cl, 404, "Not Found",
+	return http_error_serve(cl, 404, "Not Found",
 		"The requested path does not exist on this server");
 
 error500:
-	uwsd_http_error_return(cl, 500, "Internal Server Error",
-		"Unable to serve requested path: %s\n", strerror(-rv));
+	return http_error_serve(cl, 500, "Internal Server Error",
+		"Unable to serve requested path");
 }
 
 static char *
@@ -1467,6 +1504,7 @@ http_directory_serve(uwsd_client_context_t *cl)
 		goto error404;
 
 	url[strcspn(url, "?")] = 0;
+
 	path = pathexpand(url + strspn(url, "/"), base);
 
 	if (!path)
@@ -1519,22 +1557,22 @@ error403:
 	free(path);
 	free(url);
 
-	uwsd_http_error_return(cl, 403, "Permission Denied",
+	return http_error_serve(cl, 403, "Permission Denied",
 		"Access to the requested path is forbidden");
 
 error404:
 	free(path);
 	free(url);
 
-	uwsd_http_error_return(cl, 404, "Not Found",
+	return http_error_serve(cl, 404, "Not Found",
 		"The requested path does not exist on this server");
 
 error500:
 	free(path);
 	free(url);
 
-	uwsd_http_error_return(cl, 500, "Internal Server Error",
-		"Unable to serve requested path: %s\n", strerror(-rv));
+	return http_error_serve(cl, 500, "Internal Server Error",
+		"Unable to serve requested path");
 
 success:
 	free(path);
