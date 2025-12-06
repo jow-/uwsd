@@ -32,6 +32,7 @@
 #include <mbedtls/oid.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/net_sockets.h>
+#include <mbedtls/ctr_drbg.h>
 
 #include <libubox/list.h>
 
@@ -414,7 +415,7 @@ ssl_match_context(ssl_ctx_t *ssl_ctx, const struct sockaddr *sa, const char *hos
 	size_t namelen;
 
 	if (sa) {
-		if (crt->ext_types & MBEDTLS_X509_EXT_SUBJECT_ALT_NAME) {
+		if (crt->subject_alt_names.next != NULL) {
 			for (san = &crt->subject_alt_names; san; san = san->next) {
 				if ((san->buf.tag & MBEDTLS_ASN1_TAG_VALUE_MASK) != MBEDTLS_X509_SAN_IP_ADDRESS)
 					continue;
@@ -431,7 +432,7 @@ ssl_match_context(ssl_ctx_t *ssl_ctx, const struct sockaddr *sa, const char *hos
 	if (hostname) {
 		namelen = strlen(hostname);
 
-		if (crt->ext_types & MBEDTLS_X509_EXT_SUBJECT_ALT_NAME) {
+		if (crt->subject_alt_names.next != NULL) {
 			for (san = &crt->subject_alt_names; san; san = san->next) {
 				if ((san->buf.tag & MBEDTLS_ASN1_TAG_VALUE_MASK) != MBEDTLS_X509_SAN_DNS_NAME)
 					continue;
@@ -486,8 +487,19 @@ ssl_load_pem_files(ssl_ctx_t *ssl_ctx, const char *pkey_path,
 {
 	size_t i;
 	int err;
+	mbedtls_entropy_context entropy;
+	mbedtls_ctr_drbg_context ctr_drbg;
 
-	err = mbedtls_pk_parse_keyfile(&ssl_ctx->key, pkey_path, NULL);
+	mbedtls_entropy_init(&entropy);
+	mbedtls_ctr_drbg_init(&ctr_drbg);
+	if ((err = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
+									NULL, 0)) != 0) {
+		ssl_perror(NULL, err, "Unable to init drbg seed");
+	}
+
+
+	err = mbedtls_pk_parse_keyfile(&ssl_ctx->key, pkey_path, NULL,
+									mbedtls_ctr_drbg_random, &ctr_drbg);
 
 	if (err) {
 		ssl_perror(NULL, err, "Unable to load private key from PEM file '%s'", pkey_path);
@@ -495,6 +507,9 @@ ssl_load_pem_files(ssl_ctx_t *ssl_ctx, const char *pkey_path,
 
 		return false;
 	}
+
+	mbedtls_ctr_drbg_free(&ctr_drbg);
+	mbedtls_entropy_free(&entropy);
 
 	for (i = 0; cert_paths[i]; i++) {
 		err = mbedtls_x509_crt_parse_file(&ssl_ctx->certs, cert_paths[i]);
