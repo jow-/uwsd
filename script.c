@@ -24,6 +24,7 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <libgen.h>
 
 #include <arpa/inet.h>
 #include <sys/wait.h>
