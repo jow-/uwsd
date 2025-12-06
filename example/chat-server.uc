@@ -1,5 +1,5 @@
 /*
-	Example chat application to demonstate uwsd scripting capabilities.
+	Example chat application to demonstrate uwsd scripting capabilities.
 
 	In order to test this application, ensure that the uwsd server is running
 	with the shipped example configuration by invoking
@@ -189,7 +189,7 @@ export function onData(connection, msg)
 // is closed normally or abnormally by either the server or client.
 // When called, it will receive the connection context, a numerical
 // reason code as well as an implementation specific reason message
-// as first, second and third argument respecitvely.
+// as first, second and third argument respectively.
 export function onClose(connection, code, reason)
 {
 	// Obtain or client specific context data

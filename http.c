@@ -623,7 +623,7 @@ http_request_recv(uwsd_client_context_t *cl)
 					continue;
 
 				if (!uwsd_io_putchar(httpbuf, ch))
-					uwsd_http_error_return(cl, 414, "URI Too Long", "The reqested URI is too long\n");
+					uwsd_http_error_return(cl, 414, "URI Too Long", "The requested URI is too long\n");
 			}
 
 			break;
@@ -1416,17 +1416,17 @@ find_index_file(uwsd_client_context_t *cl, const char *path, struct stat *s)
 			return NULL;
 
 		if (stat(indexfile, s) == -1) {
-			uwsd_http_debug(cl, "Unable to stat() index file candiate '%s': %m", indexfile);
+			uwsd_http_debug(cl, "Unable to stat() index file candidate '%s': %m", indexfile);
 			goto skip;
 		}
 
 		if (!S_ISREG(s->st_mode)) {
-			uwsd_http_debug(cl, "Index file candiate '%s' is not a regular file", indexfile);
+			uwsd_http_debug(cl, "Index file candidate '%s' is not a regular file", indexfile);
 			goto skip;
 		}
 
 		if (!(s->st_mode & S_IROTH)) {
-			uwsd_http_debug(cl, "Index file candiate '%s' is not world readable", indexfile);
+			uwsd_http_debug(cl, "Index file candidate '%s' is not world readable", indexfile);
 			goto skip;
 		}
 
