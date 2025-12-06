@@ -1,5 +1,5 @@
 /*
-	Example file paste application to demonstate uwsd scripting capabilities.
+	Example file paste application to demonstrate uwsd scripting capabilities.
 
 	In order to test this application, ensure that the uwsd server is running
 	with the shipped example configuration by invoking
