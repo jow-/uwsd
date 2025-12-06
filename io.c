@@ -51,7 +51,7 @@ uwsd_iov_send(uwsd_connection_t *conn, struct iovec *iov, size_t len)
 		return false;
 	}
 
-	for (i = 0; i < len; i++) {
+	for (i = 0; i < len && wlen > 0; i++) {
 		if ((size_t)wlen > iov[i].iov_len) {
 			wlen -= iov[i].iov_len;
 			iov[i].iov_base += iov[i].iov_len;
@@ -60,6 +60,7 @@ uwsd_iov_send(uwsd_connection_t *conn, struct iovec *iov, size_t len)
 		else {
 			iov[i].iov_base += wlen;
 			iov[i].iov_len -= wlen;
+			wlen = 0;
 
 			if (iov[i].iov_len)
 				return false;

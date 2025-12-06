@@ -990,23 +990,30 @@ uwsd_ssl_sendv(uwsd_connection_t *conn, struct iovec *iov, size_t len)
 
 		err = mbedtls_ssl_write(ssl, iov[i].iov_base, iov[i].iov_len);
 
-		if (err >= 0)
+		/* Some bytes written ... */
+		if (err >= 0) {
 			total += err;
 
-		switch (err) {
-		case MBEDTLS_ERR_SSL_WANT_READ:
-		case MBEDTLS_ERR_SSL_WANT_WRITE:
-			if (total)
-				return total;
+			/* Short write: report bytes written so higher layers can retry remaining */
+			if ((size_t)err < iov[i].iov_len)
+				break;
+		}
 
+		/* SSL write error with some bytes previously written, report partial write */
+		else if (total > 0) {
+			break;
+		}
+
+		/* SSL write error with WANT_READ/WRITE and no bytes written, report EAGAIN */		
+		else if (err == MBEDTLS_ERR_SSL_WANT_READ ||
+				 err == MBEDTLS_ERR_SSL_WANT_WRITE) {
 			errno = EAGAIN;
 
 			return -1;
+		}
 
-		default:
-			if (total)
-				return total;
-
+		/* Other SSL write error and no bytes written, report EINVAL */
+		else {
 			errno = EINVAL;
 
 			return -1;
