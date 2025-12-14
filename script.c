@@ -969,6 +969,23 @@ uc_script_http_version(uc_vm_t *vm, size_t nargs)
 }
 
 static uc_value_t *
+uc_script_request_protocol(uc_vm_t *vm, size_t nargs)
+{
+	script_connection_t *conn = uc_fn_conn(vm);
+	uc_value_t *is_ssl = ucv_object_get(conn->req, "ssl", NULL);
+
+	if (conn->proto == UWSD_PROTOCOL_WS) {
+		return ucv_is_truish(is_ssl)
+			? ucv_string_new("wss")
+			: ucv_string_new("ws");
+	}
+
+	return ucv_is_truish(is_ssl)
+		? ucv_string_new("https")
+		: ucv_string_new("http");
+}
+
+static uc_value_t *
 uc_script_request_method(uc_vm_t *vm, size_t nargs)
 {
 	return uc_script_get_common(vm, nargs, "request_method");
@@ -1275,20 +1292,21 @@ uc_script_reply(uc_vm_t *vm, size_t nargs)
 }
 
 static const uc_function_list_t conn_fns[] = {
-	{ "version", uc_script_http_version },
-	{ "method",  uc_script_request_method },
-	{ "uri",     uc_script_request_uri },
-	{ "header",  uc_script_request_header },
-	{ "info",    uc_script_request_info },
-	{ "data",    uc_script_data },
+	{ "version",  uc_script_http_version },
+	{ "protocol", uc_script_request_protocol },
+	{ "method",   uc_script_request_method },
+	{ "uri",      uc_script_request_uri },
+	{ "header",   uc_script_request_header },
+	{ "info",     uc_script_request_info },
+	{ "data",     uc_script_data },
 
-	{ "store",   uc_script_store },
-	{ "reply",   uc_script_reply },
-	{ "accept",  uc_script_accept },
-	{ "expect",  uc_script_expect },
-	{ "send",    uc_script_send },
+	{ "store",    uc_script_store },
+	{ "reply",    uc_script_reply },
+	{ "accept",   uc_script_accept },
+	{ "expect",   uc_script_expect },
+	{ "send",     uc_script_send },
 
-	{ "close",   uc_script_close }
+	{ "close",    uc_script_close }
 };
 
 static void
