@@ -572,6 +572,7 @@ script_conn_close(script_connection_t *conn, uint16_t code, const char *msg)
 	list_del(&conn->list);
 
 	close(conn->ufd.fd);
+	conn->ufd.fd = -1;
 
 	script_conn_reset_reassembly(conn);
 }
@@ -1312,6 +1313,30 @@ static const uc_function_list_t conn_fns[] = {
 static void
 close_conn(void *ud)
 {
+	script_connection_t *conn = ud;
+
+	if (!conn)
+		return;
+
+	/* If connection wasn't explicitly closed yet, clean it up now */
+	if (!conn->close) {
+		if (conn->ufd.fd != -1) {
+			uloop_fd_delete(&conn->ufd);
+			close(conn->ufd.fd);
+			conn->ufd.fd = -1;
+		}
+
+		if (conn->list.next && conn->list.prev)
+			list_del(&conn->list);
+
+		script_conn_reset_reassembly(conn);
+	}
+
+	ucv_clear(&conn->conn);
+	ucv_clear(&conn->req);
+	ucv_clear(&conn->hdr);
+	ucv_clear(&conn->subproto);
+	ucv_clear(&conn->recv_fp);
 }
 
 
