@@ -69,12 +69,13 @@ ADD_EXECUTABLE(uwsd ${UWSD_SOURCES})
 FIND_LIBRARY(ubox NAMES ubox)
 FIND_LIBRARY(ucode NAMES ucode)
 FIND_LIBRARY(jsonc NAMES json-c)
+find_package(ZLIB)
 
 FIND_LIBRARY(crypt NAMES crypt)
 IF(crypt STREQUAL "crypt-NOTFOUND")
   SET(crypt "")
 ENDIF()
 
-TARGET_LINK_LIBRARIES(uwsd ${ubox} ${ucode} ${jsonc} ${crypt} ${UWSD_SSL_LIBRARIES})
+TARGET_LINK_LIBRARIES(uwsd ${ubox} ${ucode} ${jsonc} ${crypt} ZLIB::ZLIB ${UWSD_SSL_LIBRARIES})
 
 INSTALL(TARGETS uwsd RUNTIME DESTINATION sbin)
