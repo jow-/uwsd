@@ -60,6 +60,9 @@ typedef enum {
 	HTTP_SEND_CHUNKED = (1 << 2),
 	HTTP_SEND_COPY    = (1 << 3),
 	HTTP_SEND_FILE    = (1 << 4),
+	HTTP_SEND_GZIP    = (1 << 5),
+	HTTP_SEND_DEFLATE = (1 << 6),
+	HTTP_SEND_ZSTD    = (1 << 7),
 } uwsd_http_flag_t;
 
 typedef enum {

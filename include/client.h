@@ -75,6 +75,9 @@ typedef struct uwsd_client_context {
 		uint32_t response_flags;
 		int pipebuf[2];
 		size_t pipebuf_len;
+		void *compressed_stream;
+		uint8_t *compressed_buffer;
+		size_t compressed_buffer_size;
 	} http;
 	struct {
 		uwsd_ws_state_t state;
