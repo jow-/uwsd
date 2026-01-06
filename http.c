@@ -25,6 +25,9 @@
 #include <assert.h>
 #include <fnmatch.h>
 #include <zlib.h>
+#ifdef HAVE_ZSTD
+#include <zstd.h>
+#endif
 
 #include <arpa/inet.h>
 #include <sys/stat.h>
@@ -124,7 +127,12 @@ http_state_reset(uwsd_client_context_t *cl, uwsd_http_state_t state)
 
 	/* Free compression state */
 	if (cl->http.compressed_stream) {
-		deflateEnd((z_stream *)cl->http.compressed_stream);
+#ifdef HAVE_ZSTD
+		if (cl->http.response_flags & HTTP_SEND_ZSTD)
+			ZSTD_freeCStream((ZSTD_CStream *)cl->http.compressed_stream);
+		else
+#endif
+			deflateEnd((z_stream *)cl->http.compressed_stream);
 		free(cl->http.compressed_stream);
 		cl->http.compressed_stream = NULL;
 	}
@@ -261,10 +269,13 @@ http_is_hop_by_hop_header(uwsd_http_header_t *hdr)
 	        !strcasecmp(hdr->name, "Proxy-Authenticate"));
 }
 
-/* Parse Accept-Encoding and pick best supported (gzip or deflate) by qvalue. */
+/* Parse Accept-Encoding and pick best supported (zstd, gzip, or deflate) by qvalue. */
 static uint32_t
 http_select_compression(const char *hdr)
 {
+#ifdef HAVE_ZSTD
+	double q_zstd = -1.0;
+#endif
 	double q_gzip = -1.0, q_deflate = -1.0, q_star = -1.0, q_identity = -1.0;
 	const char *p = hdr;
 
@@ -302,6 +313,10 @@ http_select_compression(const char *hdr)
 			q_gzip = q;
 		else if (name_len == 7 && !strncasecmp(p, "deflate", 7))
 			q_deflate = q;
+#ifdef HAVE_ZSTD
+		else if (name_len == 4 && !strncasecmp(p, "zstd", 4))
+			q_zstd = q;
+#endif
 		else if (name_len == 8 && !strncasecmp(p, "identity", 8))
 			q_identity = q;
 		else if (name_len == 1 && p[0] == '*')
@@ -311,6 +326,10 @@ http_select_compression(const char *hdr)
 	}
 
 	if (q_star >= 0.0) {
+#ifdef HAVE_ZSTD
+		if (q_zstd < 0.0)
+			q_zstd = q_star;
+#endif
 		if (q_gzip < 0.0)
 			q_gzip = q_star;
 		if (q_deflate < 0.0)
@@ -323,6 +342,10 @@ http_select_compression(const char *hdr)
 	/* If identity not explicitly mentioned, treat it as lowest priority (0). */
 	if (q_identity < 0.0)
 		q_identity = 0.0;
+#ifdef HAVE_ZSTD
+	if (q_zstd < 0.0)
+		q_zstd = 0.0;
+#endif
 	if (q_gzip < 0.0)
 		q_gzip = 0.0;
 	if (q_deflate < 0.0)
@@ -330,6 +353,13 @@ http_select_compression(const char *hdr)
 
 	uint32_t best = 0;
 	double best_q = q_identity;
+
+#ifdef HAVE_ZSTD
+	if (q_zstd > best_q || (q_zstd == best_q && best == 0)) {
+		best = HTTP_SEND_ZSTD;
+		best_q = q_zstd;
+	}
+#endif
 
 	if (q_gzip > best_q || (q_gzip == best_q && best == 0)) {
 		best = HTTP_SEND_GZIP;
@@ -373,6 +403,38 @@ http_init_zlib_compress(uwsd_client_context_t *cl, bool gzip)
 
 	return true;
 }
+
+#ifdef HAVE_ZSTD
+static bool
+http_init_zstd_compress(uwsd_client_context_t *cl)
+{
+	ZSTD_CStream *zcs;
+	size_t ret;
+
+	/* Allocate zstd compression context */
+	zcs = ZSTD_createCStream();
+
+	if (!zcs) {
+		uwsd_http_error_return(cl, 500, "Internal Server Error",
+			"Failed to initialize zstd compression\n");
+	}
+
+	ret = ZSTD_initCStream(zcs, ZSTD_defaultCLevel());
+
+	if (ZSTD_isError(ret)) {
+		ZSTD_freeCStream(zcs);
+		uwsd_http_error_return(cl, 500, "Internal Server Error",
+			"Failed to initialize zstd: %s\n", ZSTD_getErrorName(ret));
+	}
+
+	/* Allocate compression buffer (64KB) */
+	cl->http.compressed_buffer_size = 65536;
+	cl->http.compressed_buffer = xalloc(cl->http.compressed_buffer_size);
+	cl->http.compressed_stream = zcs;
+
+	return true;
+}
+#endif
 
 static bool
 http_handle_body_data(uwsd_client_context_t *cl, uwsd_connection_t *conn, void *data, size_t len)
@@ -1085,6 +1147,74 @@ http_tx(uwsd_client_context_t *cl, uwsd_connection_state_t state)
 
 			/* Remain in send state as long as there is data to transmit */
 			if (uwsd_io_pending(file)) {
+#ifdef HAVE_ZSTD
+				if (cl->http.response_flags & HTTP_SEND_ZSTD) {
+					/* Initialize compression on first chunk */
+					if (!cl->http.compressed_stream && !http_init_zstd_compress(cl))
+						return false;
+
+					size_t input_len = uwsd_io_pending(file);
+					const uint8_t *input_ptr = (const uint8_t *)uwsd_io_getbuf(file);
+					ZSTD_CStream *zcs = (ZSTD_CStream *)cl->http.compressed_stream;
+
+					ZSTD_inBuffer inbuf = { input_ptr, input_len, 0 };
+
+					/* Compress all input and flush to ensure output */
+					while (inbuf.pos < inbuf.size) {
+						ZSTD_outBuffer outbuf = { cl->http.compressed_buffer, cl->http.compressed_buffer_size, 0 };
+						size_t ret = ZSTD_compressStream(zcs, &outbuf, &inbuf);
+
+						if (ZSTD_isError(ret)) {
+							client_free(cl, "zstd compression error: %s", ZSTD_getErrorName(ret));
+							return false;
+						}
+
+						if (outbuf.pos > 0) {
+							/* Send as chunked transfer: <size>\r\n<data>\r\n */
+							uwsd_io_reset(conn);
+							uwsd_io_printf(conn, "%zx\r\n", outbuf.pos);
+
+							char *buf = uwsd_io_getbuf(conn);
+							size_t buflen = uwsd_io_offset(conn);
+
+							uwsd_iov_put(cl, buf, buflen,
+							             cl->http.compressed_buffer, outbuf.pos,
+							             "\r\n", 2);
+						}
+					}
+
+					/* Flush compressed data to ensure output is sent */
+					for (;;) {
+						ZSTD_outBuffer outbuf = { cl->http.compressed_buffer, cl->http.compressed_buffer_size, 0 };
+						size_t remaining = ZSTD_flushStream(zcs, &outbuf);
+
+						if (ZSTD_isError(remaining)) {
+							client_free(cl, "zstd flush error: %s", ZSTD_getErrorName(remaining));
+							return false;
+						}
+
+						if (outbuf.pos > 0) {
+							/* Send as chunked transfer: <size>\r\n<data>\r\n */
+							uwsd_io_reset(conn);
+							uwsd_io_printf(conn, "%zx\r\n", outbuf.pos);
+
+							char *buf = uwsd_io_getbuf(conn);
+							size_t buflen = uwsd_io_offset(conn);
+
+							uwsd_iov_put(cl, buf, buflen,
+							             cl->http.compressed_buffer, outbuf.pos,
+							             "\r\n", 2);
+						}
+
+						if (remaining == 0)
+							break;
+					}
+
+					/* Consume the input data we just compressed */
+					uwsd_io_consume(file, input_len);
+				}
+				else
+#endif
 				if (cl->http.response_flags & (HTTP_SEND_GZIP | HTTP_SEND_DEFLATE)) {
 					/* Initialize compression on first chunk */
 					if (!cl->http.compressed_stream && !http_init_zlib_compress(cl, (cl->http.response_flags & HTTP_SEND_GZIP) != 0))
@@ -1133,6 +1263,48 @@ http_tx(uwsd_client_context_t *cl, uwsd_connection_state_t state)
 				return false; /* partial send */
 			}
 			/* File exhausted - send final compressed chunk if compressing */
+#ifdef HAVE_ZSTD
+			else if (cl->http.response_flags & HTTP_SEND_ZSTD) {
+				if (cl->http.compressed_stream) {
+					ZSTD_CStream *zcs = (ZSTD_CStream *)cl->http.compressed_stream;
+
+					for (;;) {
+						ZSTD_outBuffer outbuf = { cl->http.compressed_buffer, cl->http.compressed_buffer_size, 0 };
+						size_t remaining = ZSTD_endStream(zcs, &outbuf);
+
+						if (ZSTD_isError(remaining)) {
+							client_free(cl, "zstd finalization error: %s", ZSTD_getErrorName(remaining));
+							return false;
+						}
+
+						if (outbuf.pos > 0) {
+							/* Send final chunk with data */
+							uwsd_io_reset(conn);
+							uwsd_io_printf(conn, "%zx\r\n", outbuf.pos);
+
+							char *buf = uwsd_io_getbuf(conn);
+							size_t buflen = uwsd_io_offset(conn);
+
+							uwsd_iov_put(cl, buf, buflen,
+							             cl->http.compressed_buffer, outbuf.pos,
+							             "\r\n", 2);
+						}
+
+						if (remaining == 0)
+							break;
+					}
+
+					/* Send terminating zero-length chunk */
+					uwsd_iov_put(cl, "0\r\n\r\n", 5);
+
+					/* Mark compression done so we don't re-enter finalization */
+					cl->http.response_flags &= ~(HTTP_SEND_COPY | HTTP_SEND_ZSTD);
+
+					/* Ensure queued chunks are sent in a subsequent iteration */
+					return false; /* partial send */
+				}
+			}
+#endif
 			else if (cl->http.response_flags & (HTTP_SEND_GZIP | HTTP_SEND_DEFLATE)) {
 				if (cl->http.compressed_stream) {
 					z_stream *zs = (z_stream *)cl->http.compressed_stream;
@@ -1166,7 +1338,11 @@ http_tx(uwsd_client_context_t *cl, uwsd_connection_state_t state)
 					uwsd_iov_put(cl, "0\r\n\r\n", 5);
 
 					/* Mark compression done so we don't re-enter finalization */
-					cl->http.response_flags &= ~(HTTP_SEND_COPY | HTTP_SEND_GZIP | HTTP_SEND_DEFLATE);
+					cl->http.response_flags &= ~(HTTP_SEND_COPY | HTTP_SEND_GZIP | HTTP_SEND_DEFLATE
+#ifdef HAVE_ZSTD
+					                             | HTTP_SEND_ZSTD
+#endif
+					                             );
 
 					/* Ensure queued chunks are sent in a subsequent iteration */
 					return false; /* partial send */
@@ -1557,10 +1733,17 @@ send_file(uwsd_client_context_t *cl, const char *path, const char *type, struct 
 			asprintf(&cstype, "%s; charset=%s", type, config->default_charset);
 
 		/* When compressing, we don't know final size upfront, so use chunked encoding */
-		if (reply_flags & (HTTP_SEND_GZIP | HTTP_SEND_DEFLATE)) {
-
+		if (reply_flags & (HTTP_SEND_GZIP | HTTP_SEND_DEFLATE
+#ifdef HAVE_ZSTD
+		                   | HTTP_SEND_ZSTD
+#endif
+		                   )) {
 			const char *encoding = "identity";
-
+#ifdef HAVE_ZSTD
+			if (reply_flags & HTTP_SEND_ZSTD)
+				encoding = "zstd";
+			else
+#endif
 			if (reply_flags & HTTP_SEND_GZIP)
 				encoding = "gzip";
 			else if (reply_flags & HTTP_SEND_DEFLATE)
