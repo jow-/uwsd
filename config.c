@@ -404,6 +404,8 @@ static const config_block_t listen_spec = {
 			offsetof(uwsd_listen_t, transfer_timeout), { 0 } },
 		{ "idle-timeout", INTEGER,
 			offsetof(uwsd_listen_t, idle_timeout), { 0 } },
+		{ "error-filename", LIST,
+			offsetof(uwsd_listen_t, error_filenames), { 0 } },
 		MATCH_PROPERTIES(uwsd_listen_t),
 		ACTION_PROPERTIES(uwsd_listen_t),
 		{ 0 }

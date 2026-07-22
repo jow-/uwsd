@@ -323,14 +323,14 @@ ws_script_connect(uwsd_client_context_t *cl)
 		cl->upstream.ufd.fd = socket(AF_UNIX, SOCK_STREAM, 0);
 
 		if (cl->upstream.ufd.fd == -1) {
-			uwsd_http_error_send(cl, 502, "Bad Gateway",
+			uwsd_http_error_page_send(cl, 502, "Bad Gateway",
 				"Unable to spawn UNIX socket: %m");
 
 			return false;
 		}
 
 		if (connect(cl->upstream.ufd.fd, (struct sockaddr *)sun, sizeof(*sun)) == -1 && errno != EINPROGRESS) {
-			uwsd_http_error_send(cl, 502, "Bad Gateway",
+			uwsd_http_error_page_send(cl, 502, "Bad Gateway",
 				"Unable to connect to script worker: %m");
 
 			return false;
@@ -351,7 +351,7 @@ uwsd_ws_connection_accept(uwsd_client_context_t *cl)
 
 	/* various request validity checks */
 	if (cl->request_method != HTTP_GET) {
-		uwsd_http_error_send(cl, 400, "Bad Request",
+		uwsd_http_error_page_send(cl, 400, "Bad Request",
 			"Invalid request method for WebSocket handshake");
 
 		return false;
@@ -360,7 +360,7 @@ uwsd_ws_connection_accept(uwsd_client_context_t *cl)
 	key = uwsd_http_header_lookup(cl, "Sec-WebSocket-Version");
 
 	if (!key || strcmp(key, "13")) {
-		uwsd_http_error_send(cl, 400, "Bad Request",
+		uwsd_http_error_page_send(cl, 400, "Bad Request",
 			"Missing or unsupported Sec-WebSocket-Version value");
 
 		return false;
@@ -369,7 +369,7 @@ uwsd_ws_connection_accept(uwsd_client_context_t *cl)
 	key = uwsd_http_header_lookup(cl, "Sec-WebSocket-Key");
 
 	if (!key || strlen(key) != 24) {
-		uwsd_http_error_send(cl, 400, "Bad Request",
+		uwsd_http_error_page_send(cl, 400, "Bad Request",
 			"Missing or invalid Sec-WebSocket-Key header");
 
 		return false;
@@ -408,7 +408,7 @@ uwsd_ws_connection_accept(uwsd_client_context_t *cl)
 			usock_port(action->data.proxy.port));
 
 		if (cl->upstream.ufd.fd == -1) {
-			uwsd_http_error_send(cl, 502, "Bad Gateway",
+			uwsd_http_error_page_send(cl, 502, "Bad Gateway",
 				"Unable to connect to upstream server: %s",
 				strerror(errno));
 
