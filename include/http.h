@@ -128,6 +128,19 @@ uwsd_http_reply_buffer(void *buf, size_t buflen, double http_version,
 		return false;													\
 	} while (0)
 
+__hidden int __uwsd_http_error_page_serve(struct uwsd_client_context *, int, const char *);
+
+#define uwsd_http_error_page_return(cl, code, reason, msg, ...) 				do { \
+		if (__uwsd_http_error_page_serve(cl, code, reason) >= 0) 			\
+			return false; 									\
+		uwsd_http_error_return(cl, code, reason, msg, ##__VA_ARGS__); 	\
+	} while (0)
+
+#define uwsd_http_error_page_send(cl, code, reason, msg, ...) 				do { \
+		if (__uwsd_http_error_page_serve(cl, code, reason) < 0) 			\
+			uwsd_http_error_send(cl, code, reason, msg, ##__VA_ARGS__); \
+	} while (0)
+
 __hidden char *uwsd_http_header_lookup(struct uwsd_client_context *, const char *);
 __hidden bool uwsd_http_header_contains(struct uwsd_client_context *, const char *, const char *);
 

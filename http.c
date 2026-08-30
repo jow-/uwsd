@@ -338,7 +338,7 @@ http_determine_message_length(uwsd_client_context_t *cl, bool request)
 		    strncasecmp(tenc + hlen - strlen("chunked"), "chunked", strlen("chunked")) ||
 		    (hlen > strlen("chunked") && !strchr(", \r\t\n", tenc[hlen - strlen("chunked") - 1])))
 		{
-			uwsd_http_error_return(cl, 400, "Bad Request", "Invalid transfer encoding\n");
+			uwsd_http_error_page_return(cl, 400, "Bad Request", "Invalid transfer encoding\n");
 		}
 
 		http_state_transition(cl, STATE_HTTP_CHUNK_HEADER);
@@ -347,13 +347,13 @@ http_determine_message_length(uwsd_client_context_t *cl, bool request)
 		hlen = strtoull(clen, &e, 10);
 
 		if (e == clen || *e != '\0')
-			uwsd_http_error_return(cl, 400, "Bad Request", "Invalid content length\n");
+			uwsd_http_error_page_return(cl, 400, "Bad Request", "Invalid content length\n");
 
 		cl->request_length = hlen;
 		http_state_transition(cl, STATE_HTTP_BODY_KNOWN_LENGTH);
 	}
 	else if (cl->http_version <= 0x0100 && cl->request_method == HTTP_POST) {
-		uwsd_http_error_return(cl, 411, "Length Required", "Content-Length required\n");
+		uwsd_http_error_page_return(cl, 411, "Length Required", "Content-Length required\n");
 	}
 	else if (!request && http_may_have_body(cl->http_status)) {
 		/* A response with neither Content-Length nor Transfer-Encoding is
@@ -596,7 +596,7 @@ http_request_recv(uwsd_client_context_t *cl)
 			break;
 
 		if (cl->head_length++ == sizeof(httpbuf->buf.data))
-			uwsd_http_error_return(cl, 431, "Request Header Fields Too Large", "Request header line too long\n");
+			uwsd_http_error_page_return(cl, 431, "Request Header Fields Too Large", "Request header line too long\n");
 
 		switch (cl->http.state) {
 		case STATE_HTTP_REQUEST_METHOD:
@@ -609,14 +609,14 @@ http_request_recv(uwsd_client_context_t *cl)
 				}
 
 				if (i == ARRAY_SIZE(http_request_methods))
-					uwsd_http_error_return(cl, 501, "Not Implemented", "Unsupported request method\n");
+					uwsd_http_error_page_return(cl, 501, "Not Implemented", "Unsupported request method\n");
 
 				http_state_transition(cl, STATE_HTTP_REQUEST_URI);
 				uwsd_io_reset(httpbuf);
 			}
 			else {
 				if (len >= strlen("CONNECT"))
-					uwsd_http_error_return(cl, 501, "Not Implemented", "Unsupported request method\n");
+					uwsd_http_error_page_return(cl, 501, "Not Implemented", "Unsupported request method\n");
 
 				uwsd_io_putchar(httpbuf, ch);
 			}
@@ -635,7 +635,7 @@ http_request_recv(uwsd_client_context_t *cl)
 				cl->request_uri = uwsd_io_strdup(httpbuf);
 
 				if (!cl->request_uri)
-					uwsd_http_error_return(cl, 500, "Internal Server Error", "Out of memory\n");
+					uwsd_http_error_page_return(cl, 500, "Internal Server Error", "Out of memory\n");
 
 				if (ch == '\r') {
 					cl->http_version = 0x0009;
@@ -652,7 +652,7 @@ http_request_recv(uwsd_client_context_t *cl)
 					continue;
 
 				if (!uwsd_io_putchar(httpbuf, ch))
-					uwsd_http_error_return(cl, 414, "URI Too Long", "The requested URI is too long\n");
+					uwsd_http_error_page_return(cl, 414, "URI Too Long", "The requested URI is too long\n");
 			}
 
 			break;
@@ -669,13 +669,13 @@ http_request_recv(uwsd_client_context_t *cl)
 				else if (!uwsd_io_strcmp(httpbuf, "HTTP/1.1"))
 					cl->http_version = 0x0101;
 				else
-					uwsd_http_error_return(cl, 505, "HTTP Version Not Supported", "Requested protocol version not implemented\n");
+					uwsd_http_error_page_return(cl, 505, "HTTP Version Not Supported", "Requested protocol version not implemented\n");
 
 				if (cl->http_version <= 0x0100 &&
 				    cl->request_method != HTTP_GET &&
 				    cl->request_method != HTTP_HEAD &&
 				    cl->request_method != HTTP_POST)
-					uwsd_http_error_return(cl, 501, "Not Implemented", "Request method not supported by HTTP/1.0\n");
+					uwsd_http_error_page_return(cl, 501, "Not Implemented", "Request method not supported by HTTP/1.0\n");
 
 				uwsd_http_info(cl, "> %s %s",
 					http_request_methods[cl->request_method].name,
@@ -689,7 +689,7 @@ http_request_recv(uwsd_client_context_t *cl)
 					continue;
 
 				if (len >= strlen("HTTP/1.1"))
-					uwsd_http_error_return(cl, 505, "HTTP Version Not Supported", "Requested protocol version not implemented\n");
+					uwsd_http_error_page_return(cl, 505, "HTTP Version Not Supported", "Requested protocol version not implemented\n");
 
 				uwsd_io_putchar(httpbuf, ch);
 			}
@@ -700,7 +700,7 @@ http_request_recv(uwsd_client_context_t *cl)
 			if (ch == '\n')
 				http_state_transition(cl, STATE_HTTP_HEADERLINE);
 			else
-				uwsd_http_error_return(cl, 400, "Bad Request", "Invalid request line\n");
+				uwsd_http_error_page_return(cl, 400, "Bad Request", "Invalid request line\n");
 
 			break;
 
@@ -713,7 +713,7 @@ http_request_recv(uwsd_client_context_t *cl)
 			if (ch == '\r')
 				http_state_transition(cl, STATE_HTTP_HEADERLINE_LF);
 			else if (!uwsd_io_putchar(httpbuf, ch))
-				uwsd_http_error_return(cl, 431, "Request Header Fields Too Large", "Request header line too long\n");
+				uwsd_http_error_page_return(cl, 431, "Request Header Fields Too Large", "Request header line too long\n");
 
 			break;
 
@@ -721,7 +721,7 @@ http_request_recv(uwsd_client_context_t *cl)
 			if (ch == '\n') {
 				if (len) {
 					if (!http_header_parse(cl, uwsd_io_getbuf(httpbuf), len))
-						uwsd_http_error_return(cl, 400, "Bad Request", "Invalid header line\n");
+						uwsd_http_error_page_return(cl, 400, "Bad Request", "Invalid header line\n");
 
 					http_state_transition(cl, STATE_HTTP_HEADERLINE);
 					uwsd_io_reset(httpbuf);
@@ -732,7 +732,7 @@ http_request_recv(uwsd_client_context_t *cl)
 				}
 			}
 			else {
-				uwsd_http_error_return(cl, 400, "Bad Request", "Invalid header line\n");
+				uwsd_http_error_page_return(cl, 400, "Bad Request", "Invalid header line\n");
 			}
 
 			break;
@@ -798,7 +798,7 @@ http_response_recv(uwsd_client_context_t *cl)
 			break;
 
 		if (cl->head_length++ == sizeof(httpbuf->buf.data))
-			uwsd_http_error_return(cl, 502, "Bad Gateway",
+			uwsd_http_error_page_return(cl, 502, "Bad Gateway",
 				"Upstream response has too long header");
 
 		switch (cl->http.state) {
@@ -809,7 +809,7 @@ http_response_recv(uwsd_client_context_t *cl)
 				else if (!uwsd_io_strcmp(httpbuf, "HTTP/1.1"))
 					cl->http_version = 0x0101;
 				else
-					uwsd_http_error_return(cl, 502, "Bad Gateway",
+					uwsd_http_error_page_return(cl, 502, "Bad Gateway",
 						"Upstream response uses unsupported HTTP protocol version");
 
 				http_state_transition(cl, STATE_HTTP_STATUS_CODE);
@@ -823,7 +823,7 @@ http_response_recv(uwsd_client_context_t *cl)
 					len == 5 && uwsd_io_strcmp(httpbuf, "HTTP/"))
 					http_state_transition(cl, STATE_HTTP_HEADERLINE);
 				else if (len >= strlen("HTTP/1.1"))
-					uwsd_http_error_return(cl, 502, "Bad Gateway",
+					uwsd_http_error_page_return(cl, 502, "Bad Gateway",
 						"Upstream response uses unsupported HTTP protocol version");
 
 				uwsd_io_putchar(httpbuf, ch);
@@ -841,7 +841,7 @@ http_response_recv(uwsd_client_context_t *cl)
 					continue;
 
 				if (len >= 3 || !isdigit(ch))
-					uwsd_http_error_return(cl, 502, "Bad Gateway",
+					uwsd_http_error_page_return(cl, 502, "Bad Gateway",
 						"Upstream response contains invalid status code");
 
 				cl->http_status = cl->http_status * 10 + (ch - '0');
@@ -856,7 +856,7 @@ http_response_recv(uwsd_client_context_t *cl)
 				cl->request_uri = uwsd_io_strdup(httpbuf);
 
 				if (!cl->request_uri)
-					uwsd_http_error_return(cl, 500, "Internal Server Error", "Out of memory");
+					uwsd_http_error_page_return(cl, 500, "Internal Server Error", "Out of memory");
 
 				http_state_transition(cl, STATE_HTTP_STATUSLINE_LF);
 				uwsd_io_reset(httpbuf);
@@ -866,7 +866,7 @@ http_response_recv(uwsd_client_context_t *cl)
 					continue;
 
 				if (!uwsd_io_putchar(httpbuf, ch))
-					uwsd_http_error_return(cl, 502, "Bad Gateway",
+					uwsd_http_error_page_return(cl, 502, "Bad Gateway",
 						"Upstream response contains too long status message");
 			}
 
@@ -878,7 +878,7 @@ http_response_recv(uwsd_client_context_t *cl)
 				http_state_transition(cl, STATE_HTTP_HEADERLINE);
 			}
 			else
-				uwsd_http_error_return(cl, 502, "Bad Gateway",
+				uwsd_http_error_page_return(cl, 502, "Bad Gateway",
 					"Upstream response contains invalid HTTP status line");
 
 			break;
@@ -889,7 +889,7 @@ http_response_recv(uwsd_client_context_t *cl)
 			}
 			else {
 				if (!uwsd_io_putchar(httpbuf, ch))
-					uwsd_http_error_return(cl, 502, "Bad Gateway",
+					uwsd_http_error_page_return(cl, 502, "Bad Gateway",
 						"Upstream response contains too long header line");
 			}
 
@@ -908,7 +908,7 @@ http_response_recv(uwsd_client_context_t *cl)
 				}
 			}
 			else {
-				uwsd_http_error_return(cl, 502, "Bad Gateway",
+				uwsd_http_error_page_return(cl, 502, "Bad Gateway",
 					"Upstream response contains invalid header line");
 			}
 
@@ -1346,7 +1346,7 @@ http_proxy_connect(uwsd_client_context_t *cl)
 			usock_port(action->data.proxy.port));
 
 		if (cl->upstream.ufd.fd == -1)
-			uwsd_http_error_return(cl, 502, "Bad Gateway",
+			uwsd_http_error_page_return(cl, 502, "Bad Gateway",
 				"Unable to connect to upstream server: %m\n");
 	}
 
@@ -1407,9 +1407,8 @@ send_file(uwsd_client_context_t *cl, uint16_t code, const char *reason, const ch
 }
 
 static const char *
-lookup_error_filename(uwsd_action_t *action, int error)
+lookup_error_filename_list(char **filenames, int error)
 {
-	char **filenames = action->data.directory.error_filenames;
 	int i;
 
 	if (!filenames)
@@ -1432,33 +1431,135 @@ lookup_error_filename(uwsd_action_t *action, int error)
 	return NULL;
 }
 
-static bool
-http_error_serve(uwsd_client_context_t *cl, int error, const char *msg, const char *description)
+static int
+http_serve_error_page(uwsd_client_context_t *cl, int error, const char *reason)
 {
-	const char *filename = lookup_error_filename(cl->action, error);
+	const char *filename = NULL;
+	char *base = NULL;
+	const char *ctype = NULL;
+	char *path;
 	struct stat s;
+	uwsd_connection_t *conn = &cl->downstream;
+	char *p;
+	int fd;
+	ssize_t n;
+	size_t remaining;
 
-	if (filename) {
-		char *base = cl->action->data.directory.path;
-		char *path = pathexpand(filename, base);
-
-		if (path && !stat(path, &s) && S_ISREG(s.st_mode)) {
-			int rv = send_file(cl, error, msg, path, cl->action->data.directory.content_type, &s);
-
-			free(path);
-
-			switch (rv) {
-			case 1:       return true;
-			case 0:       return false;
-			default:      break;
-			}
-		}
-		else {
-			free(path);
+	/* Try action-level error filenames */
+	if (cl->action && cl->action->type == UWSD_ACTION_DIRECTORY) {
+		filename = lookup_error_filename_list(
+			cl->action->data.directory.error_filenames, error);
+		if (filename) {
+			base = cl->action->data.directory.path;
+			ctype = cl->action->data.directory.content_type;
 		}
 	}
 
+	/* Try listener-level error filenames */
+	if (!filename && cl->listener) {
+		filename = lookup_error_filename_list(
+			cl->listener->error_filenames, error);
+		if (filename) {
+			base = NULL;
+			ctype = NULL;
+		}
+	}
+
+	if (!filename)
+		return -1;
+
+	path = pathexpand(filename, base);
+	if (!path)
+		return -1;
+
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	free(path);
+
+	if (fd == -1)
+		return -1;
+
+	/* fstat on the fd (not stat on the path) to avoid TOCTOU */
+	if (fstat(fd, &s) || !S_ISREG(s.st_mode)) {
+		close(fd);
+		return -1;
+	}
+
+	/* Build response headers (uwsd_http_reply resets the buffer first) */
+	if (!ctype || !*ctype)
+		ctype = uwsd_file_mime_lookup(filename);
+
+	{
+		char szbuf[sizeof("18446744073709551615")];
+
+		snprintf(szbuf, sizeof(szbuf), "%ju", (uintmax_t)s.st_size);
+
+		uwsd_http_reply(cl, error, reason, UWSD_HTTP_REPLY_EMPTY,
+			"Content-Type", ctype ? ctype : "text/plain",
+			"Content-Length", szbuf,
+			"Connection", "close",
+			UWSD_HTTP_REPLY_EOH);
+	}
+
+	/* Skip body for HEAD requests */
+	if (cl->request_method == HTTP_HEAD) {
+		close(fd);
+		if (uwsd_http_reply_send(cl, HTTP_WANT_CLOSE))
+			client_free(cl, "error page served: %d %s", error, reason ? reason : "-");
+		return 1;
+	}
+
+	/* Check if the file body fits in the remaining buffer space after headers */
+	if ((size_t)s.st_size > (size_t)uwsd_io_available(conn)) {
+		close(fd);
+		return -1;
+	}
+
+	/* Read entire file into the response buffer (retry on EINTR/short reads) */
+	p = uwsd_io_getpos(conn);
+	remaining = (size_t)s.st_size;
+
+	while (remaining > 0) {
+		n = read(fd, p, remaining);
+		if (n <= 0) {
+			if (n < 0 && errno == EINTR)
+				continue;
+			close(fd);
+			return -1;
+		}
+		p += n;
+		remaining -= (size_t)n;
+	}
+	close(fd);
+
+	conn->buf.pos += (ssize_t)s.st_size;
+	conn->buf.end += (ssize_t)s.st_size;
+
+	/* Send response synchronously */
+	if (uwsd_http_reply_send(cl, HTTP_WANT_CLOSE))
+		client_free(cl, "error page served: %d %s", error, reason ? reason : "-");
+
+	return 1;
+}
+
+static bool
+http_error_serve(uwsd_client_context_t *cl, int error, const char *msg, const char *description)
+{
+	int rv = http_serve_error_page(cl, error, msg);
+
+	if (rv >= 0)
+		/* Error page served synchronously, client already freed by
+		 * http_tx → http_connection_close. Return false so caller
+		 * (http_file_serve/http_directory_serve) exits early via
+		 * "if (!http_file_serve(cl)) return;" and doesn't touch freed cl. */
+		return false;
+
 	uwsd_http_error_return(cl, error, msg, description);
+}
+
+__hidden int
+__uwsd_http_error_page_serve(uwsd_client_context_t *cl, int code, const char *reason)
+{
+	return http_serve_error_page(cl, code, reason);
 }
 
 static bool
@@ -1471,7 +1572,7 @@ http_file_serve(uwsd_client_context_t *cl)
 	uwsd_state_transition(cl, STATE_CONN_RESPONSE);
 
 	if (cl->request_method != HTTP_GET && cl->request_method != HTTP_HEAD)
-		uwsd_http_error_return(cl, 405, "Method Not Allowed",
+		uwsd_http_error_page_return(cl, 405, "Method Not Allowed",
 			"The used HTTP method is invalid for the requested resource\n");
 
 	if (stat(path, &s) == -1) {
@@ -1565,7 +1666,7 @@ http_directory_serve(uwsd_client_context_t *cl)
 	uwsd_state_transition(cl, STATE_CONN_RESPONSE);
 
 	if (cl->request_method != HTTP_GET && cl->request_method != HTTP_HEAD)
-		uwsd_http_error_return(cl, 405, "Method Not Allowed",
+		uwsd_http_error_page_return(cl, 405, "Method Not Allowed",
 			"The used HTTP method is invalid for the requested resource\n");
 
 	url = pathclean(urldecode(cl->request_uri), -1);
@@ -1669,11 +1770,11 @@ http_script_connect(uwsd_client_context_t *cl)
 	cl->upstream.ufd.fd = socket(AF_UNIX, SOCK_STREAM, 0);
 
 	if (cl->upstream.ufd.fd == -1)
-		uwsd_http_error_return(cl, 502, "Bad Gateway",
+		uwsd_http_error_page_return(cl, 502, "Bad Gateway",
 			"Unable to spawn UNIX socket: %m\n");
 
 	if (connect(cl->upstream.ufd.fd, (struct sockaddr *)sun, sizeof(*sun)) == -1 && errno != EINPROGRESS)
-		uwsd_http_error_return(cl, 502, "Bad Gateway",
+		uwsd_http_error_page_return(cl, 502, "Bad Gateway",
 			"Unable to connect to script worker: %m");
 
 	uwsd_state_transition(cl, STATE_CONN_UPSTREAM_CONNECT);
@@ -1826,7 +1927,7 @@ __hidden void
 uwsd_http_state_upstream_timeout(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
 	if (cl->http.state <= STATE_HTTP_STATUS_VERSION)
-		uwsd_http_error_send(cl, 504, "Gateway Timeout", "Timeout while connecting to upstream server");
+		uwsd_http_error_page_send(cl, 504, "Gateway Timeout", "Timeout while connecting to upstream server");
 	else
 		client_free(cl, "Timeout while reading upstream response");
 }
@@ -1877,7 +1978,7 @@ uwsd_http_state_upstream_handshake(uwsd_client_context_t *cl, uwsd_connection_st
 		if (errno == EAGAIN)
 			return uwsd_state_transition(cl, STATE_CONN_UPSTREAM_HS_SEND); /* retry */
 
-		uwsd_http_error_send(cl, 502, "Bad Gateway",
+		uwsd_http_error_page_send(cl, 502, "Bad Gateway",
 			"SSL handshake with upstream server failed");
 
 		return; /* failure */
@@ -1941,7 +2042,7 @@ uwsd_http_state_upstream_connected(uwsd_client_context_t *cl, uwsd_connection_st
 		append_via_header(httpbuf, cl, via);
 
 		if (!uwsd_io_printf(httpbuf, "\r\n")) {
-			uwsd_http_error_send(cl, 431,
+			uwsd_http_error_page_send(cl, 431,
 				"Request Header Fields Too Large",
 				"Request header too long\n");
 
@@ -2101,7 +2202,7 @@ uwsd_http_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 
 	if (http_use_splice_tx(cl)) {
 		if (cl->http.pipebuf[1] == -1 && pipe(cl->http.pipebuf) == -1) {
-			uwsd_http_error_send(cl, 500, "Internal Server Error",
+			uwsd_http_error_page_send(cl, 500, "Internal Server Error",
 				"Error spawning transfer pipe: %m\n");
 			return;
 		}
@@ -2112,7 +2213,7 @@ uwsd_http_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 
 		/* unrecoverable error */
 		if (wlen < 0) {
-			uwsd_http_error_send(cl, 500, "Internal Server Error",
+			uwsd_http_error_page_send(cl, 500, "Internal Server Error",
 				"Error receiving upstream response: %m");
 
 			return;
@@ -2155,7 +2256,7 @@ uwsd_http_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 
 	if (cl->http.state < STATE_HTTP_BODY_KNOWN_LENGTH) {
 		if (eof) {
-			uwsd_http_error_send(cl, 502, "Bad Gateway",
+			uwsd_http_error_page_send(cl, 502, "Bad Gateway",
 				"The invoked program did not produce a valid response");
 
 			return; /* failure */
@@ -2167,7 +2268,7 @@ uwsd_http_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 	if (!(cl->http.response_flags & (HTTP_SEND_PLAIN|HTTP_SEND_CHUNKED))) {
 		if (is_script) {
 			if (!status_header_parse(cl, &code, &msg)) {
-				uwsd_http_error_send(cl, 502, "Bad Gateway",
+				uwsd_http_error_page_send(cl, 502, "Bad Gateway",
 					"The invoked program sent an invalid status header");
 
 				return;
@@ -2233,7 +2334,7 @@ uwsd_http_state_upstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 			append_via_header(httpbuf, cl, via);
 
 		if (!uwsd_io_printf(httpbuf, "\r\n")) {
-			uwsd_http_error_send(cl, 502,
+			uwsd_http_error_page_send(cl, 502,
 				"Bad Gateway",
 				"Upstream response header too large\n");
 
