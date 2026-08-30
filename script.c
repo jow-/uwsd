@@ -2515,10 +2515,7 @@ uwsd_script_send(uwsd_client_context_t *cl, const void *data, size_t len)
 
 		cl->ws.len -= chunk;
 
-		if (chunk > 0)
-			type = cl->ws.len ? UWSD_SCRIPT_DATA_WS_FRAGMENT : UWSD_SCRIPT_DATA_WS_FINAL;
-		else
-			type = UWSD_SCRIPT_DATA_WS_EOF;
+		type = cl->ws.len ? UWSD_SCRIPT_DATA_WS_FRAGMENT : UWSD_SCRIPT_DATA_WS_FINAL;
 
 		if (!script_tx_append(cl, type, chunk, ptr))
 			return UWSD_SCRIPT_TX_ERROR;

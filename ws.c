@@ -635,6 +635,9 @@ uwsd_ws_state_downstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t
 		if (cl->ws.state < STATE_WS_PAYLOAD)
 			return; /* await more data */
 
+		if (cl->ws.state == STATE_WS_PAYLOAD && !cl->tx[0].iov_len)
+			return; /* await the payload */
+
 		if (cl->ws.state >= STATE_WS_PAYLOAD) {
 			if (!ws_handle_frame_payload(cl))
 				return; /* partial send or error */
