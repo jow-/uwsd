@@ -276,7 +276,7 @@ ssl_load_ca_certificates(const char *directory)
 	char path[PATH_MAX];
 	struct dirent *e;
 	struct stat s;
-	char *ext;
+	const char *ext;
 	DIR *dp;
 	int err;
 
