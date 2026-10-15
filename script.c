@@ -230,10 +230,20 @@ server_socket_setup(const char *sockpath)
  * matches UWSD_SCRIPT_TX_MAX, the bound of the opposite direction. */
 #define SCRIPT_CONN_TX_MAX (256 * 1024)
 
+/* ULOOP_ERROR_CB belongs to every registration of this descriptor. Without
+ * it, libubox deregisters the fd itself on EPOLLERR or EPOLLHUP
+ * (uloop_fetch_events()), and the callback runs only for the event that is
+ * already fetched. One call reads one buffer, so data beyond it, such as a
+ * burst or an EOF record that a read splits, is never read: recv() never
+ * returns 0, script_conn_close() never runs, and the descriptor, the
+ * connection object and the onClose() call are lost. With the flag, the
+ * callback runs again while data is left. */
+#define SCRIPT_CONN_UFD_FLAGS (ULOOP_READ | ULOOP_ERROR_CB)
+
 static void
 script_conn_tx_poll(script_connection_t *conn, bool want_write)
 {
-	unsigned int flags = ULOOP_READ | (want_write ? ULOOP_WRITE : 0);
+	unsigned int flags = SCRIPT_CONN_UFD_FLAGS | (want_write ? ULOOP_WRITE : 0);
 
 	if (conn->ufd.flags == flags)
 		return;
@@ -2192,7 +2202,20 @@ handle_request(struct uloop_fd *ufd, unsigned int events)
 	ssize_t rlen, i, rem;
 	uint8_t buf[16384];
 
-	if (events & ULOOP_WRITE) {
+	/* After a hangup or an error, libubox sets ufd->error, and epoll reports
+	 * the descriptor again while data is left. A hangup can still leave data
+	 * to read, such as the EOF record with the close code that the main
+	 * process sends before it closes the socket, so read that first. Close
+	 * only when nothing is left to read. A write to a peer that is gone is
+	 * pointless. */
+	if (ufd->error) {
+		if (!(events & ULOOP_READ)) {
+			script_conn_close(conn, 0, NULL);
+
+			return;
+		}
+	}
+	else if (events & ULOOP_WRITE) {
 		if (!script_conn_tx_flush(conn)) {
 			script_conn_close(conn, 0, NULL);
 
@@ -2212,10 +2235,12 @@ handle_request(struct uloop_fd *ufd, unsigned int events)
 
 			/* Expected on the non-blocking socket: a wakeup that
 			 * carried only writability leaves nothing to read. */
-			if (errno == EAGAIN || errno == EWOULDBLOCK)
-				return;
+			if (errno != EAGAIN && errno != EWOULDBLOCK)
+				fprintf(stderr, "Internal receive error: %m\n");
 
-			fprintf(stderr, "Internal receive error: %m\n");
+			/* After an error event, nothing else will arrive. */
+			if (ufd->error)
+				script_conn_close(conn, 0, NULL);
 
 			return;
 		}
@@ -2332,7 +2357,7 @@ handle_client(struct uloop_fd *ufd, unsigned int events)
 
 	/* No ULOOP_BLOCKING: libubox then sets O_NONBLOCK, so a client that
 	 * stops reading cannot hold the single worker of this script. */
-	uloop_fd_add(&conn->ufd, ULOOP_READ);
+	uloop_fd_add(&conn->ufd, SCRIPT_CONN_UFD_FLAGS);
 	list_add_tail(&conn->list, &requests);
 }
 
