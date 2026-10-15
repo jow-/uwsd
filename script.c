@@ -25,6 +25,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <libgen.h>
+#include <poll.h>
 
 #include <arpa/inet.h>
 #include <sys/wait.h>
@@ -109,6 +110,11 @@ typedef struct {
 	} buf;
 	uc_value_t *req, *hdr, *conn, *subproto;
 	uc_value_t *recv_fp;
+	struct {
+		uint8_t *data;
+		size_t len, pos;
+	} tx;
+	struct uloop_timeout close_timer;
 	struct {
 		uwsd_ws_msg_format_t format;
 		union {
@@ -216,6 +222,154 @@ server_socket_setup(const char *sockpath)
 	return sock;
 }
 
+/* The worker socket is non-blocking, so a client that stops reading can no
+ * longer stall the single worker and with it every other connection of this
+ * script. Pending bytes wait in a per-connection buffer which the write event
+ * drains. The buffer is capped, because the peer decides when it reads: on
+ * overflow the connection is dropped instead of growing the worker. The cap
+ * matches UWSD_SCRIPT_TX_MAX, the bound of the opposite direction. */
+#define SCRIPT_CONN_TX_MAX (256 * 1024)
+
+static void
+script_conn_tx_poll(script_connection_t *conn, bool want_write)
+{
+	unsigned int flags = ULOOP_READ | (want_write ? ULOOP_WRITE : 0);
+
+	if (conn->ufd.flags == flags)
+		return;
+
+	uloop_fd_add(&conn->ufd, flags);
+}
+
+/* The HTTP paths of this backend (uc_script_reply() and its copy helpers)
+ * write the socket synchronously and have no event to resume from. Waiting
+ * for writability keeps their contract on the now non-blocking socket, and
+ * the caller's own error handling still sees a failure when the peer is
+ * gone. */
+static bool
+script_conn_tx_wait(script_connection_t *conn)
+{
+	struct pollfd pfd = { .fd = conn->ufd.fd, .events = POLLOUT };
+	socklen_t len = sizeof(int);
+	int err = 0;
+
+	while (true) {
+		if (poll(&pfd, 1, -1) == -1) {
+			if (errno == EINTR)
+				continue;
+
+			return false;
+		}
+
+		if (pfd.revents & POLLOUT)
+			return true;
+
+		/* POLLHUP or POLLERR alone: report the cause, not the EAGAIN
+		 * of the write that led here. */
+		if (getsockopt(conn->ufd.fd, SOL_SOCKET, SO_ERROR, &err, &len) == -1 || !err)
+			err = EPIPE;
+
+		errno = err;
+
+		return false;
+	}
+}
+
+/* Returns false when the connection is unusable and the caller must close it. */
+static bool
+script_conn_tx_flush(script_connection_t *conn)
+{
+	ssize_t wlen;
+
+	while (conn->tx.pos < conn->tx.len) {
+		wlen = write(conn->ufd.fd, conn->tx.data + conn->tx.pos,
+		             conn->tx.len - conn->tx.pos);
+
+		if (wlen == -1) {
+			if (errno == EINTR)
+				continue;
+
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				script_conn_tx_poll(conn, true);
+
+				return true;
+			}
+
+			return false;
+		}
+
+		conn->tx.pos += (size_t)wlen;
+	}
+
+	/* A connection that once queued a large frame would otherwise keep
+	 * that allocation while it idles. */
+	free(conn->tx.data);
+	conn->tx.data = NULL;
+	conn->tx.len = 0;
+	conn->tx.pos = 0;
+	script_conn_tx_poll(conn, false);
+
+	return true;
+}
+
+/* The cap judges what earlier frames left unsent, not the new frame: one reply
+ * can be larger than the cap, and a peer that reads must still receive it. A
+ * peer that stops reading leaves a backlog, so a later frame finds it above the
+ * cap, and a connection holds at most the cap plus one frame. The whole frame
+ * enters the buffer at once, so the buffer never holds a header without its
+ * payload. */
+static bool
+script_conn_tx(script_connection_t *conn, struct iovec *iov, size_t iolen)
+{
+	size_t i, total = 0, backlog;
+	uint8_t *p;
+
+	for (i = 0; i < iolen; i++)
+		total += iov[i].iov_len;
+
+	if (total == 0)
+		return true;
+
+	/* Judge the backlog only after the peer had its chance to take it. */
+	if (!script_conn_tx_flush(conn))
+		return false;
+
+	backlog = conn->tx.len - conn->tx.pos;
+
+	if (backlog > SCRIPT_CONN_TX_MAX) {
+		fprintf(stderr, "Send buffer limit (%u bytes) reached, closing connection\n",
+			(unsigned)SCRIPT_CONN_TX_MAX);
+
+		return false;
+	}
+
+	/* The bytes that the peer already took would otherwise stay until the
+	 * buffer drains completely, and a reader that never quite catches up
+	 * would grow the buffer past the cap. */
+	if (conn->tx.pos > 0) {
+		memmove(conn->tx.data, conn->tx.data + conn->tx.pos, backlog);
+		conn->tx.len = backlog;
+		conn->tx.pos = 0;
+	}
+
+	p = realloc(conn->tx.data, conn->tx.len + total);
+
+	if (!p) {
+		fprintf(stderr, "Unable to grow send buffer: %m\n");
+
+		return false;
+	}
+
+	conn->tx.data = p;
+
+	for (i = 0; i < iolen; i++) {
+		memcpy(conn->tx.data + conn->tx.len, iov[i].iov_base, iov[i].iov_len);
+		conn->tx.len += iov[i].iov_len;
+	}
+
+	return script_conn_tx_flush(conn);
+}
+
 static bool
 ws_frame_send(script_connection_t *conn, uwsd_ws_opcode_t opcode, const void *data, size_t len)
 {
@@ -257,11 +411,7 @@ ws_frame_send(script_connection_t *conn, uwsd_ws_opcode_t opcode, const void *da
 	iov[iolen].iov_len = len;
 	iolen++;
 
-	// FIXME: fragmentation, error handling etc.
-	if (writev(conn->ufd.fd, iov, iolen) == -1)
-		return false;
-
-	return true;
+	return script_conn_tx(conn, iov, iolen);
 }
 
 static void __attribute__((format (printf, 4, 0)))
@@ -287,6 +437,7 @@ ws_error_send(script_connection_t *conn, bool terminate, uint16_t code, const ch
 static void __attribute__((format (printf, 4, 0)))
 http_reply_send(script_connection_t *conn, uint16_t code, const char *reason, const char *msg, ...)
 {
+	struct iovec iov;
 	va_list ap;
 	size_t len;
 
@@ -296,7 +447,12 @@ http_reply_send(script_connection_t *conn, uint16_t code, const char *reason, co
 		code, reason, msg, ap);
 	va_end(ap);
 
-	send(conn->ufd.fd, conn->buf.data, len, 0);
+	iov.iov_base = conn->buf.data;
+	iov.iov_len = len;
+
+	/* An error page is small and this is already a failure path, so an
+	 * unsendable reply only loses the body the peer stopped reading. */
+	script_conn_tx(conn, &iov, 1);
 }
 
 
@@ -563,6 +719,9 @@ script_conn_close(script_connection_t *conn, uint16_t code, const char *msg)
 			ucv_put(uc_vm_stack_pop(vm));
 	}
 
+	/* Another path can close the connection before a deferred close runs. */
+	uloop_timeout_cancel(&conn->close_timer);
+
 	conn->close = true;
 	ucv_resource_persistent_set(conn->conn, false);
 	ucv_clear(&conn->conn);
@@ -573,7 +732,34 @@ script_conn_close(script_connection_t *conn, uint16_t code, const char *msg)
 
 	close(conn->ufd.fd);
 
+	free(conn->tx.data);
+	conn->tx.data = NULL;
+	conn->tx.len = 0;
+	conn->tx.pos = 0;
+
 	script_conn_reset_reassembly(conn);
+}
+
+static void
+script_conn_close_cb(struct uloop_timeout *t)
+{
+	script_connection_t *conn = container_of(t, script_connection_t, close_timer);
+
+	script_conn_close(conn, 0, NULL);
+}
+
+/* A send that the cap refuses happens inside a call of the script, which can
+ * still use the connection after send() returns, so the connection cannot be
+ * freed there. Nothing reads the mark after onData() or after a callback that
+ * the script runs on its own, so the event loop closes the connection once the
+ * script returned. The peer then sees the close at once, instead of losing
+ * every later message without notice. */
+static void
+script_conn_close_defer(script_connection_t *conn)
+{
+	conn->close = true;
+	conn->close_timer.cb = script_conn_close_cb;
+	uloop_timeout_set(&conn->close_timer, 0);
 }
 
 static bool
@@ -893,7 +1079,8 @@ uc_script_send(uc_vm_t *vm, size_t nargs)
 {
 	script_connection_t *conn = uc_fn_conn(vm);
 	uc_value_t *data = uc_fn_arg(0);
-	ssize_t n, wlen;
+	struct iovec iov;
+	ssize_t n;
 	char *p;
 
 	if (!conn)
@@ -909,23 +1096,20 @@ uc_script_send(uc_vm_t *vm, size_t nargs)
 		if (conn->state != STATE_WS)
 			return NULL;
 
-		if (!ws_frame_send(conn, OPCODE_TEXT, p, n))
+		if (!ws_frame_send(conn, OPCODE_TEXT, p, n)) {
+			script_conn_close_defer(conn);
+
 			return ucv_boolean_new(false);
+		}
 	}
 	else {
-		while (n) {
-			wlen = write(conn->ufd.fd, p, ssize_t_min(n, 16384));
+		iov.iov_base = p;
+		iov.iov_len = n;
 
-			if (wlen == -1) {
-				if (errno == EINTR)
-					continue;
+		if (!script_conn_tx(conn, &iov, 1)) {
+			script_conn_close_defer(conn);
 
-				uc_vm_raise_exception(vm, EXCEPTION_RUNTIME, "write error: %m");
-				break;
-			}
-
-			p += wlen;
-			n -= wlen;
+			return ucv_boolean_new(false);
 		}
 	}
 
@@ -1086,8 +1270,18 @@ copy_sendfile(int in_fd, script_connection_t *conn, ssize_t len)
 	while (len > 0) {
 		ssize_t wlen = sendfile(conn->ufd.fd, in_fd, NULL, len);
 
-		if (wlen < 0)
+		if (wlen < 0) {
+			if (errno == EINTR)
+				continue;
+
+			/* The input is a regular file, so EAGAIN comes from the
+			 * socket. */
+			if ((errno == EAGAIN || errno == EWOULDBLOCK) &&
+			    script_conn_tx_wait(conn))
+				continue;
+
 			return -1;
+		}
 
 		if (wlen == 0)
 			break; /* input reached EOF before the expected length */
@@ -1099,6 +1293,23 @@ copy_sendfile(int in_fd, script_connection_t *conn, ssize_t len)
 	return copied;
 }
 
+static bool
+copy_input_ready(int in_fd)
+{
+	struct pollfd pfd = { .fd = in_fd, .events = POLLIN };
+	int rc;
+
+	do
+		rc = poll(&pfd, 1, 0);
+	while (rc == -1 && errno == EINTR);
+
+	/* A failed poll, or an input with nothing to read, leaves the EAGAIN
+	 * of the splice() for the caller. */
+	errno = EAGAIN;
+
+	return rc == 1;
+}
+
 static ssize_t
 copy_splice(int in_fd, script_connection_t *conn)
 {
@@ -1107,8 +1318,21 @@ copy_splice(int in_fd, script_connection_t *conn)
 	while (true) {
 		ssize_t wlen = splice(in_fd, NULL, conn->ufd.fd, NULL, SSIZE_MAX, 0);
 
-		if (wlen < 0)
+		if (wlen < 0) {
+			if (errno == EINTR)
+				continue;
+
+			/* EAGAIN can also come from a non-blocking input. Judge
+			 * by the input, which only this process reads: the main
+			 * process drains the socket at any time, so a writable
+			 * socket after the EAGAIN proves nothing. */
+			if ((errno == EAGAIN || errno == EWOULDBLOCK) &&
+			    copy_input_ready(in_fd) &&
+			    script_conn_tx_wait(conn))
+				continue;
+
 			return -1;
+		}
 
 		if (wlen == 0)
 			break;
@@ -1151,6 +1375,11 @@ copy_writev(int in_fd, script_connection_t *conn)
 			if (wlen == -1) {
 				if (errno == EINTR)
 					continue;
+
+				if (errno == EAGAIN || errno == EWOULDBLOCK) {
+					if (script_conn_tx_wait(conn))
+						continue;
+				}
 
 				return -1;
 			}
@@ -1253,6 +1482,10 @@ uc_script_reply(uc_vm_t *vm, size_t nargs)
 
 		if (wlen == -1) {
 			if (errno == EINTR)
+				continue;
+
+			if ((errno == EAGAIN || errno == EWOULDBLOCK) &&
+			    script_conn_tx_wait(conn))
 				continue;
 
 			uc_vm_raise_exception(vm, EXCEPTION_RUNTIME, "write error: %m");
@@ -1959,12 +2192,28 @@ handle_request(struct uloop_fd *ufd, unsigned int events)
 	ssize_t rlen, i, rem;
 	uint8_t buf[16384];
 
+	if (events & ULOOP_WRITE) {
+		if (!script_conn_tx_flush(conn)) {
+			script_conn_close(conn, 0, NULL);
+
+			return;
+		}
+
+		if (!(events & ULOOP_READ))
+			return;
+	}
+
 	while (true) {
 		rlen = recv(ufd->fd, buf, sizeof(buf), 0);
 
 		if (rlen == -1) {
 			if (errno == EINTR)
 				continue;
+
+			/* Expected on the non-blocking socket: a wakeup that
+			 * carried only writability leaves nothing to read. */
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+				return;
 
 			fprintf(stderr, "Internal receive error: %m\n");
 
@@ -2081,7 +2330,9 @@ handle_client(struct uloop_fd *ufd, unsigned int events)
 	if ((s = getenv("UWSD_WS_MSG_LIMIT")) != NULL)
 		conn->reassembly.limit = strtoul(s, NULL, 10);
 
-	uloop_fd_add(&conn->ufd, ULOOP_READ | ULOOP_BLOCKING);
+	/* No ULOOP_BLOCKING: libubox then sets O_NONBLOCK, so a client that
+	 * stops reading cannot hold the single worker of this script. */
+	uloop_fd_add(&conn->ufd, ULOOP_READ);
 	list_add_tail(&conn->list, &requests);
 }
 
