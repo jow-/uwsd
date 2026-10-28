@@ -2513,15 +2513,22 @@ uwsd_script_send(uwsd_client_context_t *cl, const void *data, size_t len)
 	do {
 		size_t chunk = size_t_min(remaining, chunk_size);
 
-		cl->ws.len -= chunk;
+		remaining -= chunk;
 
-		type = cl->ws.len ? UWSD_SCRIPT_DATA_WS_FRAGMENT : UWSD_SCRIPT_DATA_WS_FINAL;
+		/* The worker joins fragments until it receives WS_FINAL. Mark the last
+		 * chunk WS_FINAL only when the parser holds a whole frame that carries
+		 * FIN; a frame without FIN stays WS_FRAGMENT, so the worker joins it
+		 * with the next frame. Do not change cl->ws.len here: ws_downstream_rx()
+		 * reads it as the frame length on each read of a frame that spans reads. */
+		if (remaining == 0 && cl->ws.state == STATE_WS_COMPLETE && cl->ws.header.fin)
+			type = UWSD_SCRIPT_DATA_WS_FINAL;
+		else
+			type = UWSD_SCRIPT_DATA_WS_FRAGMENT;
 
 		if (!script_tx_append(cl, type, chunk, ptr))
 			return UWSD_SCRIPT_TX_ERROR;
 
 		ptr += chunk;
-		remaining -= chunk;
 	} while (remaining > 0);
 
 	return uwsd_script_flush(cl);
