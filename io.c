@@ -106,7 +106,7 @@ uwsd_iov_tx(uwsd_connection_t *conn, uwsd_connection_state_t next_state)
 				uwsd_ws_connection_close(cl, STATUS_INTERNAL_ERROR,
 					"Error while sending data to upstream server: %m");
 			else
-				uwsd_http_error_send(cl, 502, "Bad Gateway",
+				uwsd_http_error_page_send(cl, 502, "Bad Gateway",
 					"Error while sending data to upstream server: %m\n");
 		}
 		else {

@@ -122,6 +122,7 @@ typedef struct {
 	struct list_head matches;
 	struct list_head auth;
 	int request_timeout, transfer_timeout, idle_timeout;
+	char **error_filenames;
 	uwsd_action_t *default_action;
 	uwsd_ssl_t *ssl;
 } uwsd_listen_t;
