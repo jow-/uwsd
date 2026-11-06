@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
+#include <string.h>
 
 #include <sys/time.h>
 #include <sys/ioctl.h>
@@ -127,7 +128,82 @@ client_free(uwsd_client_context_t *cl, const char *reason, ...)
 	free(cl->script_tx.buf);
 
 	list_del(&cl->list);
+	uwsd_listen_update_accept(cl->listener);
 	free(cl);
+}
+
+__hidden int
+client_listener_total(uwsd_listen_t *listen)
+{
+	uwsd_client_context_t *cl;
+	int total = 0;
+
+	list_for_each_entry(cl, &clients, list)
+		if (cl->listener == listen)
+			total++;
+
+	return total;
+}
+
+__hidden bool
+client_accept_allowed(uwsd_listen_t *listen, struct sockaddr *peeraddr, size_t alen)
+{
+	(void)peeraddr;
+	(void)alen;
+
+	if (listen->max_connections > 0 &&
+	    client_listener_total(listen) >= listen->max_connections)
+		return false;
+
+	return true;
+}
+
+static bool
+same_peer_address(struct sockaddr *a, struct sockaddr *b)
+{
+	if (a->sa_family != b->sa_family)
+		return false;
+
+	if (a->sa_family == AF_INET) {
+		struct sockaddr_in *sa = (struct sockaddr_in *)a;
+		struct sockaddr_in *sb = (struct sockaddr_in *)b;
+
+		return memcmp(&sa->sin_addr, &sb->sin_addr, sizeof(sa->sin_addr)) == 0;
+	}
+
+	if (a->sa_family == AF_INET6) {
+		struct sockaddr_in6 *sa = (struct sockaddr_in6 *)a;
+		struct sockaddr_in6 *sb = (struct sockaddr_in6 *)b;
+
+		return memcmp(&sa->sin6_addr, &sb->sin6_addr, sizeof(sa->sin6_addr)) == 0;
+	}
+
+	return false;
+}
+
+__hidden int
+client_source_active_count(uwsd_client_context_t *self, struct sockaddr *peeraddr, size_t alen)
+{
+	uwsd_client_context_t *cl;
+	int n = 0;
+
+	(void)alen;
+
+	list_for_each_entry(cl, &clients, list) {
+		if (cl == self)
+			continue;
+
+		if (!cl->action || cl->action->type < UWSD_ACTION_SCRIPT)
+			continue;
+
+		if (cl->upstream.ufd.fd == -1)
+			continue;
+
+		if (same_peer_address(&cl->sa_peer.unspec, peeraddr))
+			n++;
+	}
+
+	return n;
 }
 
 __hidden void

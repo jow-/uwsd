@@ -123,6 +123,8 @@ typedef struct {
 	struct list_head auth;
 	int request_timeout, transfer_timeout, idle_timeout;
 	char **error_filenames;
+	int max_connections, max_source_active_connections;
+	bool blocked;
 	uwsd_action_t *default_action;
 	uwsd_ssl_t *ssl;
 } uwsd_listen_t;
@@ -130,5 +132,6 @@ typedef struct {
 
 __hidden bool uwsd_listen_init(uwsd_listen_t *, const char *, uint16_t);
 __hidden void uwsd_listen_free(uwsd_listen_t *);
+__hidden void uwsd_listen_update_accept(uwsd_listen_t *);
 
 #endif /* UWSD_LISTEN_H */

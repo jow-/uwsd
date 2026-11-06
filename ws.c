@@ -349,6 +349,15 @@ uwsd_ws_connection_accept(uwsd_client_context_t *cl)
 	char *key, *buf;
 	size_t len, rem;
 
+	if (cl->listener->max_source_active_connections > 0 &&
+	    client_source_active_count(cl, &cl->sa_peer.unspec, sizeof(cl->sa_peer.in6)) >=
+	    cl->listener->max_source_active_connections) {
+		uwsd_http_error_page_send(cl, 429, "Too Many Requests",
+			"Too many active requests from this source");
+
+		return false;
+	}
+
 	/* various request validity checks */
 	if (cl->request_method != HTTP_GET) {
 		uwsd_http_error_page_send(cl, 400, "Bad Request",
