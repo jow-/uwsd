@@ -18,7 +18,6 @@
 #include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
-#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -61,6 +60,13 @@ static struct {
 
 #undef HTTP_METHOD
 
+#define UWSD_HTTP_MAX_CHUNK_SIZE       ((size_t)INT_MAX)
+#define UWSD_HTTP_MAX_BODY_SIZE        ((size_t)1 << 31)
+#define UWSD_HTTP_MAX_HEADER_COUNT     100
+#define UWSD_HTTP_MAX_HEADER_BYTES     16384
+#define UWSD_HTTP_MAX_CHUNK_LINE       4096
+#define UWSD_HTTP_MAX_TRAILER_BYTES    16384
+
 static const char *
 http_state_name(uwsd_http_state_t state)
 {
@@ -88,21 +94,36 @@ http_state_transition(uwsd_client_context_t *cl, uwsd_http_state_t state)
 }
 
 static void
-http_state_reset(uwsd_client_context_t *cl, uwsd_http_state_t state)
+http_state_reset_headers(uwsd_client_context_t *cl)
 {
-	/* Free previous request data */
+	/* Free previous request/response header data and parser counters, but
+	 * keep the connection buffers intact. */
 	while (cl->http_num_headers > 0)
 		free(cl->http_headers[--cl->http_num_headers].name);
 
 	free(cl->http_headers);
 	free(cl->request_uri);
 
-	cl->http_status = 0;
 	cl->http_headers = NULL;
 	cl->request_uri = NULL;
-	cl->request_method = HTTP_GET;
+	cl->http_status = 0;
 	cl->request_length = 0;
 	cl->head_length = 0;
+	cl->http.header_bytes = 0;
+	cl->http.chunk_line_len = 0;
+	cl->http.trailer_bytes = 0;
+	cl->http.chunk_size_started = false;
+	cl->http.request_flags = 0;
+	cl->http.response_flags = 0;
+}
+
+static void
+http_state_reset(uwsd_client_context_t *cl, uwsd_http_state_t state)
+{
+	/* Free previous request data */
+	http_state_reset_headers(cl);
+
+	cl->request_method = HTTP_GET;
 
 	/* Reset buffer state */
 	uwsd_io_reset(&cl->downstream);
@@ -134,70 +155,166 @@ http_state_reset(uwsd_client_context_t *cl, uwsd_http_state_t state)
 	http_state_transition(cl, state);
 }
 
+enum {
+	HTTP_CT_ALPHA  = (1 << 0),
+	HTTP_CT_CTL    = (1 << 1),
+	HTTP_CT_DIGIT  = (1 << 2),
+	HTTP_CT_HEXDIG = (1 << 3),
+	HTTP_CT_VCHAR  = (1 << 4),
+	HTTP_CT_WSP    = (1 << 5),
+	HTTP_CT_DELIM  = (1 << 6),
+	HTTP_CT_VDELIM = HTTP_CT_DELIM | HTTP_CT_VCHAR,
+	HTTP_CT_VALPHA = HTTP_CT_ALPHA | HTTP_CT_VCHAR,
+	HTTP_CT_XALPHA = HTTP_CT_ALPHA | HTTP_CT_HEXDIG | HTTP_CT_VCHAR,
+	HTTP_CT_XDIGIT = HTTP_CT_DIGIT | HTTP_CT_HEXDIG | HTTP_CT_VCHAR,
+};
+
+static uint8_t http_chartypes[256] = {
+/* 00..07 */ HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL,
+/* 08..0f */ HTTP_CT_CTL, HTTP_CT_WSP, HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL,
+/* 10..17 */ HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL,
+/* 18..1f */ HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL, HTTP_CT_CTL,
+/* 20..27 */ HTTP_CT_WSP, HTTP_CT_VCHAR, HTTP_CT_VDELIM, HTTP_CT_VCHAR, HTTP_CT_VCHAR, HTTP_CT_VCHAR, HTTP_CT_VCHAR, HTTP_CT_VCHAR,
+/* 28..2f */ HTTP_CT_VDELIM, HTTP_CT_VDELIM, HTTP_CT_VCHAR, HTTP_CT_VCHAR, HTTP_CT_VDELIM, HTTP_CT_VCHAR, HTTP_CT_VCHAR, HTTP_CT_VDELIM,
+/* 30..37 */ HTTP_CT_XDIGIT, HTTP_CT_XDIGIT, HTTP_CT_XDIGIT, HTTP_CT_XDIGIT, HTTP_CT_XDIGIT, HTTP_CT_XDIGIT, HTTP_CT_XDIGIT, HTTP_CT_XDIGIT,
+/* 38..3f */ HTTP_CT_XDIGIT, HTTP_CT_XDIGIT, HTTP_CT_VDELIM, HTTP_CT_VDELIM, HTTP_CT_VDELIM, HTTP_CT_VDELIM, HTTP_CT_VDELIM, HTTP_CT_VDELIM,
+/* 40..47 */ HTTP_CT_VDELIM, HTTP_CT_XALPHA, HTTP_CT_XALPHA, HTTP_CT_XALPHA, HTTP_CT_XALPHA, HTTP_CT_XALPHA, HTTP_CT_XALPHA, HTTP_CT_VALPHA,
+/* 48..4f */ HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA,
+/* 50..57 */ HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA,
+/* 58..5f */ HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VDELIM, HTTP_CT_VDELIM, HTTP_CT_VDELIM, HTTP_CT_VCHAR, HTTP_CT_VCHAR,
+/* 60..67 */ HTTP_CT_VCHAR, HTTP_CT_XALPHA, HTTP_CT_XALPHA, HTTP_CT_XALPHA, HTTP_CT_XALPHA, HTTP_CT_XALPHA, HTTP_CT_XALPHA, HTTP_CT_VALPHA,
+/* 68..6f */ HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA,
+/* 70..77 */ HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA,
+/* 78..7f */ HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VALPHA, HTTP_CT_VDELIM, HTTP_CT_VCHAR, HTTP_CT_VDELIM, HTTP_CT_VCHAR, HTTP_CT_CTL,
+/* 80..ff: no flags */
+};
+
+static bool
+http_is_tchar(uint8_t c)
+{
+	return (http_chartypes[c] & (HTTP_CT_VCHAR | HTTP_CT_DELIM)) == HTTP_CT_VCHAR;
+}
+
+static bool
+http_is_wsp(uint8_t c)
+{
+	return http_chartypes[c] & HTTP_CT_WSP;
+}
+
+static bool
+http_is_ctl(uint8_t c)
+{
+	return http_chartypes[c] & HTTP_CT_CTL;
+}
+
+static bool
+http_is_digit(uint8_t c)
+{
+	return http_chartypes[c] & HTTP_CT_DIGIT;
+}
+
+static bool
+http_is_hexdig(uint8_t c)
+{
+	return http_chartypes[c] & HTTP_CT_HEXDIG;
+}
+
+static bool
+http_parse_content_length(const char *str, size_t *out)
+{
+	size_t val = 0;
+	const char *p;
+
+	if (!str || !*str)
+		return false;
+
+	for (p = str; *p; p++) {
+		if (!http_is_digit(*p))
+			return false;
+
+		if (val > (SIZE_MAX - (size_t)(*p - '0')) / 10)
+			return false;
+
+		val = val * 10 + (size_t)(*p - '0');
+	}
+
+	if (val > UWSD_HTTP_MAX_BODY_SIZE)
+		return false;
+
+	*out = val;
+
+	return true;
+}
+
 static bool
 http_header_parse(uwsd_client_context_t *cl, char *line, size_t len)
 {
 	char *name, *value, *p, *e = line + len;
 	uwsd_http_header_t *hdr = NULL;
-	bool continuation;
 	size_t i, j;
 
-	/* Is a header line continuation? */
-	if (*line == ' ' || *line == '\t') {
-		if (cl->http_num_headers == 0)
+	/* RFC 9110 header field names are non-empty TCHAR tokens with the colon
+	 * immediately after the name. Reject obs-fold / leading whitespace too:
+	 * intermediaries may treat such a line differently. */
+	if (!len || http_is_wsp(*line))
+		return false;
+
+	cl->http.header_bytes += len;
+
+	if (cl->http.header_bytes > UWSD_HTTP_MAX_HEADER_BYTES)
+		return false;
+
+	name = (char *)line;
+	p = name + memcspn(name, e - name, ":");
+
+	if (p == name || p == e || *p != ':')
+		return false;
+
+	for (i = 0; i < (size_t)(p - name); i++)
+		if (!http_is_tchar(name[i]))
 			return false;
 
-		hdr = &cl->http_headers[cl->http_num_headers - 1];
-		value = line;
-		continuation = true;
+	/* Header name already seen? */
+	for (i = 0; i < cl->http_num_headers; i++) {
+		if (strlen(cl->http_headers[i].name) == (size_t)(p - name) &&
+		    !strncasecmp(cl->http_headers[i].name, name, p - name)) {
+			hdr = &cl->http_headers[i];
+			break;
+		}
 	}
-	else {
-		/* Is a normal header line */
-		name = (char *)line;
-		p = name + memcspn(name, e - name, ":");
 
-		if (p == name || p == e || *p != ':')
+	/* Not seen yet, add new header entry */
+	if (!hdr) {
+		if (cl->http_num_headers >= UWSD_HTTP_MAX_HEADER_COUNT)
 			return false;
 
-		/* Header name already seen? Match on the stored name's true length
-		 * first: an embedded NUL in the incoming name would otherwise let
-		 * strncasecmp stop early and the '\0' index below read past the stored
-		 * allocation. */
-		for (i = 0; i < cl->http_num_headers; i++) {
-			if (strlen(cl->http_headers[i].name) == (size_t)(p - name) &&
-			    !strncasecmp(cl->http_headers[i].name, name, p - name)) {
-				hdr = &cl->http_headers[i];
-				break;
-			}
-		}
+		cl->http_headers = xrealloc(cl->http_headers,
+			sizeof(uwsd_http_header_t) * (cl->http_num_headers + 1));
 
-		/* Not seen yet, add new header entry */
-		if (!hdr) {
-			cl->http_headers = xrealloc(cl->http_headers,
-				sizeof(uwsd_http_header_t) * (cl->http_num_headers + 1));
+		hdr = &cl->http_headers[cl->http_num_headers++];
+		hdr->name = xalloc((p - name) + 1);
+		hdr->value = NULL;
 
-			hdr = &cl->http_headers[cl->http_num_headers++];
-			hdr->name = xalloc((p - name) + 1);
-			hdr->value = NULL;
-
-			for (i = 0; i < (size_t)(p - name); i++)
-				hdr->name[i] = name[i];
-		}
-
-		value = (char *)++p;
-		continuation = false;
+		for (i = 0; i < (size_t)(p - name); i++)
+			hdr->name[i] = name[i];
 	}
+
+	value = (char *)++p;
 
 	/* Skip leading white space in value. The bound on 'e' matters: the line is
-	 * not NUL-terminated and shares the reused head accumulator, so an all-white
-	 * space value would otherwise walk past 'e' into stale bytes and make
-	 * (e - value) negative in the copies below. */
-	for (; value < e && (*value == ' ' || *value == '\t'); value++)
+	 * not NUL-terminated and shares the reused head accumulator. */
+	for (; value < e && http_is_wsp(*value); value++)
 		;
 
 	/* Skip trailing white space in value */
-	for (; e > value && (e[-1] == ' ' || e[-1] == '\t'); e--)
+	for (; e > value && http_is_wsp(e[-1]); e--)
 		;
+
+	/* RFC 9110 field-content permits VCHAR/obs-text plus SP and HTAB;
+	 * reject NUL and other control characters. */
+	for (i = 0; i < (size_t)(e - value); i++)
+		if (http_is_ctl(value[i]))
+			return false;
 
 	/* If new header, set value... */
 	if (!hdr->value) {
@@ -211,12 +328,10 @@ http_header_parse(uwsd_client_context_t *cl, char *line, size_t len)
 	else {
 		i = strlen(hdr->name);
 		j = strlen(hdr->value);
-		hdr->name = xrealloc(hdr->name, i + 1 + j + 2 + !continuation + (e - value));
+		hdr->name = xrealloc(hdr->name, i + 1 + j + 2 + (e - value));
 		hdr->value = hdr->name + i + 1;
 
-		if (!continuation)
-			hdr->value[j++] = ',';
-
+		hdr->value[j++] = ',';
 		hdr->value[j++] = ' ';
 		memcpy(hdr->value + j, value, e - value);
 		hdr->value[j + (e - value)] = '\0';
@@ -322,7 +437,7 @@ static bool
 http_determine_message_length(uwsd_client_context_t *cl, bool request)
 {
 	uint32_t *flags = request ? &cl->http.request_flags : &cl->http.response_flags;
-	char *clen, *tenc, *e;
+	char *clen, *tenc;
 	size_t hlen;
 
 	tenc = uwsd_http_header_lookup(cl, "Transfer-Encoding");
@@ -330,6 +445,24 @@ http_determine_message_length(uwsd_client_context_t *cl, bool request)
 
 	if (cl->http_version <= 0x0100 || uwsd_http_header_contains(cl, "Connection", "close"))
 		*flags |= HTTP_WANT_CLOSE;
+
+	/* 1xx responses are interim and cannot carry a body. Skip them and parse
+	 * the next response instead of forwarding them as final responses. */
+	if (!request && cl->http_status >= 100 && cl->http_status < 200) {
+		http_state_reset_headers(cl);
+		http_state_transition(cl, STATE_HTTP_STATUS_VERSION);
+
+		return true;
+	}
+
+	if (tenc && clen) {
+		if (request)
+			uwsd_http_error_page_return(cl, 400, "Bad Request",
+				"Both Transfer-Encoding and Content-Length present\n");
+
+		uwsd_http_error_page_return(cl, 502, "Bad Gateway",
+			"Upstream response contains both Transfer-Encoding and Content-Length\n");
+	}
 
 	if (tenc) {
 		hlen = strlen(tenc);
@@ -341,12 +474,12 @@ http_determine_message_length(uwsd_client_context_t *cl, bool request)
 			uwsd_http_error_page_return(cl, 400, "Bad Request", "Invalid transfer encoding\n");
 		}
 
+		cl->http.chunk_size_started = false;
+		cl->http.chunk_line_len = 0;
 		http_state_transition(cl, STATE_HTTP_CHUNK_HEADER);
 	}
 	else if (clen) {
-		hlen = strtoull(clen, &e, 10);
-
-		if (e == clen || *e != '\0')
+		if (!http_parse_content_length(clen, &hlen))
 			uwsd_http_error_page_return(cl, 400, "Bad Request", "Invalid content length\n");
 
 		cl->request_length = hlen;
@@ -381,8 +514,16 @@ http_chunked_recv(uwsd_client_context_t *cl, uwsd_connection_t *conn)
 
 		switch (cl->http.state) {
 		case STATE_HTTP_CHUNK_HEADER:
-			if (isxdigit(ch)) {
-				if (cl->request_length > (((size_t)-1) - hex(ch)) / 16) {
+			if (http_is_hexdig(ch)) {
+				cl->http.chunk_size_started = true;
+
+				if (++cl->http.chunk_line_len > UWSD_HTTP_MAX_CHUNK_LINE) {
+					client_free(cl, "chunk header too long");
+
+					return false;
+				}
+
+				if (cl->request_length > (UWSD_HTTP_MAX_CHUNK_SIZE - hex(ch)) / 16) {
 					client_free(cl, "chunk size too large");
 
 					return false;
@@ -391,9 +532,33 @@ http_chunked_recv(uwsd_client_context_t *cl, uwsd_connection_t *conn)
 				cl->request_length = cl->request_length * 16 + hex(ch);
 			}
 			else if (ch == ';') {
+				if (!cl->http.chunk_size_started) {
+					client_free(cl, "empty chunk size");
+
+					return false;
+				}
+
+				if (++cl->http.chunk_line_len > UWSD_HTTP_MAX_CHUNK_LINE) {
+					client_free(cl, "chunk header too long");
+
+					return false;
+				}
+
 				http_state_transition(cl, STATE_HTTP_CHUNK_HEADER_EXT);
 			}
 			else if (ch == '\r') {
+				if (!cl->http.chunk_size_started) {
+					client_free(cl, "empty chunk size");
+
+					return false;
+				}
+
+				if (++cl->http.chunk_line_len > UWSD_HTTP_MAX_CHUNK_LINE) {
+					client_free(cl, "chunk header too long");
+
+					return false;
+				}
+
 				http_state_transition(cl, STATE_HTTP_CHUNK_HEADER_LF);
 			}
 			else {
@@ -405,15 +570,34 @@ http_chunked_recv(uwsd_client_context_t *cl, uwsd_connection_t *conn)
 			break;
 
 		case STATE_HTTP_CHUNK_HEADER_EXT:
-			if (ch == '\r')
+			if (++cl->http.chunk_line_len > UWSD_HTTP_MAX_CHUNK_LINE) {
+				client_free(cl, "chunk header too long");
+
+				return false;
+			}
+
+			if (ch == '\r') {
 				http_state_transition(cl, STATE_HTTP_CHUNK_HEADER_LF);
+			}
+			else if (http_is_ctl(ch)) {
+				client_free(cl, "invalid chunk extension");
+
+				return false;
+			}
 
 			break;
 
 		case STATE_HTTP_CHUNK_HEADER_LF:
 			if (ch == '\n') {
 				data = uwsd_io_getpos(conn);
-				http_state_transition(cl, cl->request_length ? STATE_HTTP_CHUNK_DATA : STATE_HTTP_CHUNK_TRAILER);
+
+				if (cl->request_length) {
+					http_state_transition(cl, STATE_HTTP_CHUNK_DATA);
+				}
+				else {
+					cl->http.trailer_bytes = 0;
+					http_state_transition(cl, STATE_HTTP_CHUNK_TRAILER);
+				}
 			}
 			else {
 				client_free(cl, "invalid chunk header [%02x]", ch);
@@ -449,6 +633,8 @@ http_chunked_recv(uwsd_client_context_t *cl, uwsd_connection_t *conn)
 
 		case STATE_HTTP_CHUNK_DATA_LF:
 			if (ch == '\n') {
+				cl->http.chunk_size_started = false;
+				cl->http.chunk_line_len = 0;
 				http_state_transition(cl, STATE_HTTP_CHUNK_HEADER);
 			}
 			else {
@@ -460,10 +646,18 @@ http_chunked_recv(uwsd_client_context_t *cl, uwsd_connection_t *conn)
 			break;
 
 		case STATE_HTTP_CHUNK_TRAILER:
-			if (ch == '\r')
+			if (ch == '\r') {
 				http_state_transition(cl, STATE_HTTP_CHUNK_TRAILER_LF);
-			else
+			}
+			else {
+				if (++cl->http.trailer_bytes > UWSD_HTTP_MAX_TRAILER_BYTES) {
+					client_free(cl, "chunk trailer too long");
+
+					return false;
+				}
+
 				http_state_transition(cl, STATE_HTTP_CHUNK_TRAILLINE);
+			}
 
 			break;
 
@@ -480,6 +674,12 @@ http_chunked_recv(uwsd_client_context_t *cl, uwsd_connection_t *conn)
 			break;
 
 		case STATE_HTTP_CHUNK_TRAILLINE:
+			if (++cl->http.trailer_bytes > UWSD_HTTP_MAX_TRAILER_BYTES) {
+				client_free(cl, "chunk trailer too long");
+
+				return false;
+			}
+
 			if (ch == '\r')
 				http_state_transition(cl, STATE_HTTP_CHUNK_TRAILLINE_LF);
 
@@ -530,12 +730,35 @@ http_contentlen_recv(uwsd_client_context_t *cl, uwsd_connection_t *conn)
 }
 
 static bool
+http_request_body_complete(uwsd_client_context_t *cl)
+{
+	switch (cl->http.state) {
+	case STATE_HTTP_BODY_KNOWN_LENGTH:
+		return cl->request_length == 0;
+
+	case STATE_HTTP_REQUEST_DONE:
+	case STATE_HTTP_CHUNK_DONE:
+	case STATE_HTTP_BODY_CLOSE:
+		return true;
+
+	default:
+		return false;
+	}
+}
+
+static bool
 http_untileof_recv(uwsd_client_context_t *cl, uwsd_connection_t *conn)
 {
 	size_t rlen = uwsd_io_pending(conn);
 
-	if (!rlen && uwsd_io_eof(conn))
-		http_state_transition(cl, STATE_HTTP_REQUEST_DONE);
+	if (!rlen) {
+		if (uwsd_io_eof(conn))
+			http_state_transition(cl, STATE_HTTP_REQUEST_DONE);
+
+		/* Do not emit a terminal chunk here. The caller's normal
+		 * REQUEST_DONE/CHUNK_DONE path emits it exactly once. */
+		return true;
+	}
 
 	if (!http_handle_body_data(cl, conn, uwsd_io_getpos(conn), rlen))
 		return false;
@@ -624,11 +847,6 @@ http_request_recv(uwsd_client_context_t *cl)
 			break;
 
 		case STATE_HTTP_REQUEST_URI:
-			if (ch == '\n') {
-				ch = '\r';
-				uwsd_io_ungetc(conn);
-			}
-
 			if (ch == ' ' || ch == '\r') {
 				assert(!cl->request_uri);
 
@@ -648,7 +866,7 @@ http_request_recv(uwsd_client_context_t *cl)
 				uwsd_io_reset(httpbuf);
 			}
 			else {
-				if (len == 0 && isspace(ch))
+				if (len == 0 && http_is_wsp(ch))
 					continue;
 
 				if (!uwsd_io_putchar(httpbuf, ch))
@@ -658,11 +876,6 @@ http_request_recv(uwsd_client_context_t *cl)
 			break;
 
 		case STATE_HTTP_REQUEST_VERSION:
-			if (ch == '\n') {
-				ch = '\r';
-				uwsd_io_ungetc(conn);
-			}
-
 			if (ch == '\r') {
 				if (!uwsd_io_strcmp(httpbuf, "HTTP/1.0"))
 					cl->http_version = 0x0100;
@@ -685,7 +898,7 @@ http_request_recv(uwsd_client_context_t *cl)
 				uwsd_io_reset(httpbuf);
 			}
 			else {
-				if (len == 0 && isspace(ch))
+				if (len == 0 && http_is_wsp(ch))
 					continue;
 
 				if (len >= strlen("HTTP/1.1"))
@@ -705,11 +918,6 @@ http_request_recv(uwsd_client_context_t *cl)
 			break;
 
 		case STATE_HTTP_HEADERLINE:
-			if (ch == '\n') {
-				ch = '\r';
-				uwsd_io_ungetc(conn);
-			}
-
 			if (ch == '\r')
 				http_state_transition(cl, STATE_HTTP_HEADERLINE_LF);
 			else if (!uwsd_io_putchar(httpbuf, ch))
@@ -720,8 +928,15 @@ http_request_recv(uwsd_client_context_t *cl)
 		case STATE_HTTP_HEADERLINE_LF:
 			if (ch == '\n') {
 				if (len) {
-					if (!http_header_parse(cl, uwsd_io_getbuf(httpbuf), len))
+					if (!http_header_parse(cl, uwsd_io_getbuf(httpbuf), len)) {
+						if (cl->http.header_bytes > UWSD_HTTP_MAX_HEADER_BYTES ||
+						    cl->http_num_headers >= UWSD_HTTP_MAX_HEADER_COUNT)
+							uwsd_http_error_page_return(cl, 431,
+								"Request Header Fields Too Large",
+								"Request header too large\n");
+
 						uwsd_http_error_page_return(cl, 400, "Bad Request", "Invalid header line\n");
+					}
 
 					http_state_transition(cl, STATE_HTTP_HEADERLINE);
 					uwsd_io_reset(httpbuf);
@@ -816,7 +1031,7 @@ http_response_recv(uwsd_client_context_t *cl)
 				uwsd_io_reset(httpbuf);
 			}
 			else {
-				if (len == 0 && isspace(ch))
+				if (len == 0 && http_is_wsp(ch))
 					continue;
 
 				if (cl->action->type == UWSD_ACTION_SCRIPT &&
@@ -837,10 +1052,10 @@ http_response_recv(uwsd_client_context_t *cl)
 				uwsd_io_reset(httpbuf);
 			}
 			else {
-				if (len == 0 && isspace(ch))
+				if (len == 0 && http_is_wsp(ch))
 					continue;
 
-				if (len >= 3 || !isdigit(ch))
+				if (len >= 3 || !http_is_digit(ch))
 					uwsd_http_error_page_return(cl, 502, "Bad Gateway",
 						"Upstream response contains invalid status code");
 
@@ -862,7 +1077,7 @@ http_response_recv(uwsd_client_context_t *cl)
 				uwsd_io_reset(httpbuf);
 			}
 			else {
-				if (len == 0 && isspace(ch))
+				if (len == 0 && http_is_wsp(ch))
 					continue;
 
 				if (!uwsd_io_putchar(httpbuf, ch))
@@ -877,9 +1092,10 @@ http_response_recv(uwsd_client_context_t *cl)
 				uwsd_http_info(cl, "< %03hu %s", cl->http_status, cl->request_uri);
 				http_state_transition(cl, STATE_HTTP_HEADERLINE);
 			}
-			else
+			else {
 				uwsd_http_error_page_return(cl, 502, "Bad Gateway",
 					"Upstream response contains invalid HTTP status line");
+			}
 
 			break;
 
@@ -898,7 +1114,16 @@ http_response_recv(uwsd_client_context_t *cl)
 		case STATE_HTTP_HEADERLINE_LF:
 			if (ch == '\n') {
 				if (len) {
-					http_header_parse(cl, uwsd_io_getbuf(httpbuf), len);
+					if (!http_header_parse(cl, uwsd_io_getbuf(httpbuf), len)) {
+						if (cl->http.header_bytes > UWSD_HTTP_MAX_HEADER_BYTES ||
+						    cl->http_num_headers >= UWSD_HTTP_MAX_HEADER_COUNT)
+							uwsd_http_error_page_return(cl, 502, "Bad Gateway",
+								"Upstream response header too large\n");
+
+						uwsd_http_error_page_return(cl, 502, "Bad Gateway",
+							"Upstream response contains invalid header line\n");
+					}
+
 					http_state_transition(cl, STATE_HTTP_HEADERLINE);
 					uwsd_io_reset(httpbuf);
 				}
@@ -1337,6 +1562,13 @@ http_proxy_connect(uwsd_client_context_t *cl)
 {
 	uwsd_action_t *action = cl->action;
 
+	if (cl->listener->max_source_active_connections > 0 &&
+	    client_source_active_count(cl, &cl->sa_peer.unspec, sizeof(cl->sa_peer.in6)) >=
+	    cl->listener->max_source_active_connections) {
+		uwsd_http_error_page_return(cl, 429, "Too Many Requests",
+			"Too many active requests from this source\n");
+	}
+
 	if (cl->upstream.ufd.fd == -1) {
 		uwsd_http_debug(cl, "connecting to upstream HTTP server %s:%hu",
 			action->data.proxy.hostname, action->data.proxy.port);
@@ -1760,6 +1992,13 @@ http_script_connect(uwsd_client_context_t *cl)
 {
 	struct sockaddr_un *sun = &cl->action->data.script.sun;
 
+	if (cl->listener->max_source_active_connections > 0 &&
+	    client_source_active_count(cl, &cl->sa_peer.unspec, sizeof(cl->sa_peer.in6)) >=
+	    cl->listener->max_source_active_connections) {
+		uwsd_http_error_page_return(cl, 429, "Too Many Requests",
+			"Too many active requests from this source\n");
+	}
+
 	/* Close previous connections as script host does (yet) handle
 	 * HTTP connection reuse */
 	if (cl->upstream.ufd.fd != -1)
@@ -1827,6 +2066,12 @@ uwsd_http_state_request_recv(uwsd_client_context_t *cl, uwsd_connection_state_t 
 
 	if (!http_request_recv(cl))
 		return; /* failure */
+
+	if (uwsd_io_eof(&cl->downstream) && !http_request_body_complete(cl)) {
+		client_free(cl, "downstream closed with incomplete request body");
+
+		return;
+	}
 
 	if (cl->http.state < STATE_HTTP_BODY_KNOWN_LENGTH) {
 		if (!uwsd_io_eof(&cl->downstream))
@@ -2100,6 +2345,12 @@ uwsd_http_state_upstream_send(uwsd_client_context_t *cl, uwsd_connection_state_t
 			return;
 	}
 
+	if (uwsd_io_eof(&cl->downstream) && !http_request_body_complete(cl)) {
+		client_free(cl, "downstream closed with incomplete request body");
+
+		return;
+	}
+
 	if (cl->http.state == STATE_HTTP_BODY_CLOSE) {
 		http_state_reset(cl, STATE_HTTP_STATUS_VERSION);
 
@@ -2121,13 +2372,15 @@ status_header_parse(uwsd_client_context_t *cl, uint16_t *code, char **message)
 		return true;
 	}
 
-	if (!isdigit(status[0]) || !isdigit(status[1]) ||
-	    !isdigit(status[2]) || !isspace(status[3]))
+	if (!http_is_digit(status[0]) ||
+	    !http_is_digit(status[1]) ||
+	    !http_is_digit(status[2]) ||
+	    !http_is_wsp(status[3]))
 		return false;
 
 	*code = (status[0] - '0') * 100 + (status[1] - '0') * 10 + (status[2] - '0');
 
-	for (*message = status + 4; isspace(**message); (*message)++)
+	for (*message = status + 4; http_is_wsp(**message); (*message)++)
 		;
 
 	return **message;
@@ -2155,7 +2408,7 @@ append_host_header(uwsd_connection_t *httpbuf, uwsd_client_context_t *cl)
 	}
 
 	else {
-		if (cl->listener->hostname && !isdigit(*cl->listener->hostname) && !strchr(cl->listener->hostname, ':')) {
+		if (cl->listener->hostname && !http_is_digit(*cl->listener->hostname) && !strchr(cl->listener->hostname, ':')) {
 			uwsd_io_printf(httpbuf, "%s", cl->listener->hostname);
 		}
 		else if (cl->sa_local.unspec.sa_family == AF_INET6) {
@@ -2429,11 +2682,27 @@ uwsd_http_state_downstream_send(uwsd_client_context_t *cl, uwsd_connection_state
 __hidden void
 uwsd_http_state_downstream_recv(uwsd_client_context_t *cl, uwsd_connection_state_t state, bool upstream)
 {
-	if (!uwsd_io_readahead(&cl->downstream))
+	if (!uwsd_io_readahead(&cl->downstream)) {
+		if (uwsd_io_eof(&cl->downstream) && !http_request_body_complete(cl))
+			client_free(cl, "downstream closed with incomplete request body");
+
 		return; /* failure */
+	}
+
+	if (uwsd_io_eof(&cl->downstream) && !http_request_body_complete(cl)) {
+		client_free(cl, "downstream closed with incomplete request body");
+
+		return;
+	}
 
 	if (!http_request_recv(cl))
 		return; /* failure */
+
+	if (uwsd_io_eof(&cl->downstream) && !http_request_body_complete(cl)) {
+		client_free(cl, "downstream closed with incomplete request body");
+
+		return;
+	}
 
 	uwsd_state_transition(cl, STATE_CONN_UPSTREAM_SEND);
 }

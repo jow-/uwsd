@@ -76,6 +76,10 @@ typedef struct uwsd_client_context {
 		int pipebuf[2];
 		size_t pipebuf_len;
 		size_t sendfile_len;
+		size_t header_bytes;
+		size_t chunk_line_len;
+		size_t trailer_bytes;
+		bool chunk_size_started;
 	} http;
 	struct {
 		uwsd_ws_state_t state;
@@ -119,6 +123,9 @@ typedef struct uwsd_client_context {
 __hidden void client_create(int, uwsd_listen_t *, struct sockaddr *, size_t);
 __hidden void client_free(uwsd_client_context_t *, const char *, ...);
 __hidden void client_free_all(void);
+__hidden bool client_accept_allowed(uwsd_listen_t *, struct sockaddr *, size_t);
+__hidden int client_listener_total(uwsd_listen_t *);
+__hidden int client_source_active_count(uwsd_client_context_t *, struct sockaddr *, size_t);
 
 __hidden bool client_accept(uwsd_client_context_t *);
 __hidden bool client_connect(uwsd_client_context_t *);

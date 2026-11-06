@@ -406,6 +406,10 @@ static const config_block_t listen_spec = {
 			offsetof(uwsd_listen_t, idle_timeout), { 0 } },
 		{ "error-filename", LIST,
 			offsetof(uwsd_listen_t, error_filenames), { 0 } },
+		{ "max-connections", INTEGER,
+			offsetof(uwsd_listen_t, max_connections), { 0 } },
+		{ "max-source-active-connections", INTEGER,
+			offsetof(uwsd_listen_t, max_source_active_connections), { 0 } },
 		MATCH_PROPERTIES(uwsd_listen_t),
 		ACTION_PROPERTIES(uwsd_listen_t),
 		{ 0 }
@@ -1224,10 +1228,12 @@ parse_listen(void *obj, const char *label)
 	uint16_t port;
 	bool rv;
 
-	/* set default timeouts */
+	/* set default timeouts and connection limits */
 	listen->request_timeout = 1000;
 	listen->transfer_timeout = 10000;
 	listen->idle_timeout = 60000;
+	listen->max_connections = 100;
+	listen->max_source_active_connections = 50;
 
 	if (!parse_hostname_port(label, "listen", &hostname, &port))
 		return false;
@@ -1252,6 +1258,12 @@ validate_listen(void *obj)
 
 	if (listen->idle_timeout < 1)
 		return parse_error("Invalid idle-timeout");
+
+	if (listen->max_connections < 0)
+		return parse_error("Invalid max-connections");
+
+	if (listen->max_source_active_connections < 0)
+		return parse_error("Invalid max-source-active-connections");
 
 	if (!listen->default_action && list_empty(&listen->matches))
 		return parse_error("Listen declares neither action nor match directives");

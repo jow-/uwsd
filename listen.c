@@ -19,6 +19,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <errno.h>
+#include <unistd.h>
 
 #include <arpa/inet.h>
 
@@ -59,12 +60,45 @@ accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags)
 #endif
 
 static void
+listen_block(uwsd_listen_t *listen)
+{
+	if (listen->blocked)
+		return;
+
+	uloop_fd_delete(&listen->ufd);
+	listen->blocked = true;
+
+	uwsd_log_warn(NULL, "connection limit reached on %s:%hu, pausing accepts",
+		listen->hostname, listen->port);
+}
+
+__hidden void
+uwsd_listen_update_accept(uwsd_listen_t *listen)
+{
+	if (!listen || listen->ufd.fd == -1)
+		return;
+
+	if (listen->blocked && client_accept_allowed(listen, NULL, 0)) {
+		uloop_fd_add(&listen->ufd, ULOOP_READ);
+		listen->blocked = false;
+	}
+}
+
+static void
 accept_cb(struct uloop_fd *ufd, unsigned int events)
 {
 	uwsd_listen_t *listen = container_of(ufd, uwsd_listen_t, ufd);
 	socklen_t alen = sizeof(struct sockaddr_in6);
 	struct sockaddr_in6 sa = { 0 };
 	int fd;
+
+	/* At the global limit, leave pending connections in the kernel backlog
+	 * and stop accepting until a client slot is released. */
+	if (!client_accept_allowed(listen, NULL, 0)) {
+		listen_block(listen);
+
+		return;
+	}
 
 	fd = accept4(ufd->fd, (struct sockaddr *)&sa, &alen, SOCK_NONBLOCK|SOCK_CLOEXEC);
 
@@ -75,6 +109,9 @@ accept_cb(struct uloop_fd *ufd, unsigned int events)
 	}
 
 	client_create(fd, listen, (struct sockaddr *)&sa, alen);
+
+	if (!client_accept_allowed(listen, NULL, 0))
+		listen_block(listen);
 }
 
 #define LISTEN_RETRY_INTERVAL 1000
@@ -112,6 +149,7 @@ uwsd_listen_init(uwsd_listen_t *listen, const char *hostname, uint16_t port)
 {
 	listen->hostname = xstrdup((hostname && *hostname) ? hostname : "::");
 	listen->port = port;
+	listen->blocked = false;
 
 	listen->ufd.cb = accept_cb;
 	listen->ufd.fd = usock(

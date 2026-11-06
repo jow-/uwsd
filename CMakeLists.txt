@@ -3,6 +3,7 @@ include(CheckCSourceCompiles)
 include(CheckSymbolExists)
 
 PROJECT(uwsd C)
+include(CTest)
 ADD_DEFINITIONS(-Os -Wall -Werror --std=gnu99 -ffunction-sections -fwrapv -D_GNU_SOURCE)
 
 IF(CMAKE_C_COMPILER_VERSION VERSION_GREATER 6)
@@ -78,3 +79,41 @@ ENDIF()
 TARGET_LINK_LIBRARIES(uwsd ${ubox} ${ucode} ${jsonc} ${crypt} ${UWSD_SSL_LIBRARIES})
 
 INSTALL(TARGETS uwsd RUNTIME DESTINATION sbin)
+
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+	SET(UWSD_TEST_NAMES
+		"empty chunk size"
+		"extension-only chunk size"
+		"bare LF request"
+		"TE + Content-Length"
+		"huge chunk size pins"
+		"negative Content-Length"
+		"plus Content-Length"
+		"NUL header name"
+		"space header name"
+		"NUL header value"
+		"header count cap"
+		"header bytes cap"
+		"incomplete body release"
+		"zero chunk before body"
+		"1xx interim response"
+		"invalid upstream header"
+		"connection limit delays accept"
+		"source active cap + plain files"
+	)
+
+	FOREACH(test_name IN LISTS UWSD_TEST_NAMES)
+		STRING(REPLACE " " "_" test_id "${test_name}")
+		STRING(REPLACE "+" "plus" test_id "${test_id}")
+		STRING(REPLACE "-" "_" test_id "${test_id}")
+
+		ADD_TEST(NAME "uwsd_${test_id}"
+			COMMAND ${Python3_EXECUTABLE}
+				${CMAKE_CURRENT_SOURCE_DIR}/tests/test_uwsd.py
+				--test "${test_name}"
+				$<TARGET_FILE:uwsd>)
+		SET_TESTS_PROPERTIES("uwsd_${test_id}" PROPERTIES
+			WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+	ENDFOREACH()
+endif()
